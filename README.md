@@ -34,8 +34,8 @@ an access token printed at startup.
 |-------|------|
 | **System** | Overview (CPU/mem/GPU/disk/temp/net charts + hardware panel), Monitor (threshold alerts + 24 h history), Processes (+ detail inspector), Logs, Kernel, Updates, Users |
 | **Storage & files** | Storage (disk + folder analyzer), Files (preview images/PDF/video/audio/Word/Excel, open-with, editor + vim mode, sketch, bulk trash), Search (regex), Clean up |
-| **Developer** | Network (ports, kill-by-port, speed test), Dev (Docker containers + live stats + compose + logs + shell + prune, services, toolchain), Git (repo dashboard: branch/dirty/ahead-behind, fetch/pull/stash), API client (saved requests, environments with `{{vars}}`, history), Runtimes, Tools (HTTP tester, JSON/YAML, regex, diff, cron, color/case, secrets, website preview) |
-| **Assistant** | AI chat backed by the local Claude CLI with a live system snapshot, plus a one-click **health report** (prioritized fixes from your live system state) |
+| **Developer** | Network (ports, kill-by-port, speed test), Dev (Docker containers + live stats + compose + logs + shell + prune, services, toolchain), Git (repo dashboard: branch/dirty/ahead-behind, fetch/pull/stash), API client (saved requests, environments with `{{vars}}`, history), Runtimes (versions + switch defaults via rustup / update-alternatives), Tools (HTTP tester, JSON/YAML, regex, diff, cron, color/case, secrets, website preview) |
+| **Assistant** | AI chat + one-click **health report**, backed by a **pluggable provider**: the local Claude CLI (default, no key), the **Anthropic API**, any **OpenAI-compatible** endpoint, or a local **Ollama** model — configured in Settings |
 | **Settings** | Brightness, volume, power profile, blank/suspend timers, night light, Do Not Disturb, battery %, tap-to-click, natural scroll, text size, Bluetooth, Wi-Fi, GNOME theme, wallpaper + **live wallpaper slideshow**; **dashboard theming** — accent colours, live animated backgrounds (aurora/particles), and a drag-to-reorder **customizable home screen** |
 | **Packages** | Search & install/remove via apt + snap |
 
