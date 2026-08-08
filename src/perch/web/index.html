@@ -25,7 +25,7 @@
   <button data-tab="files">📁 Files</button>
   <button data-tab="search">🔍 Search</button>
   <button data-tab="clean">🧹 Clean up</button>
-  <div class="ngroup">Developer</div>
+  <div class="ngroup" id="ngDev">Developer</div>
   <button data-tab="net">🌐 Network</button>
   <button data-tab="dev">🧰 Dev</button>
   <button data-tab="git">🔀 Git</button>
@@ -511,6 +511,9 @@
         OpenAI-compatible option at any local gateway instead.</div>
     </div>
     <div class="panel"><h2>Dashboard theme <span class="muted">— this app's look</span></h2>
+      <div class="row"><span style="width:130px">Simple mode</span>
+        <button class="btn" id="simpleTog">⚪ Off</button>
+        <span class="muted" style="font-size:12px">hides developer tools — just monitoring, files, packages &amp; settings</span></div>
       <div class="row"><span style="width:130px">Accent color</span>
         <span id="accSwatches"></span>
         <input type="color" id="accCustom" value="#2a78d6" style="width:34px;height:26px;border:none;background:none;cursor:pointer">

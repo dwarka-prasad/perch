@@ -1052,6 +1052,26 @@ $("#codeHere").onclick=async()=>{
   try{const r=await api("/api/editor",{method:"POST",body:JSON.stringify({path:fPath})});
     toast("opened in "+r.editor);}catch(e){toast(e.message,false);}};
 /* ---- capabilities: hide buttons for apps this machine doesn't have ---- */
+/* ---- simple mode: hide developer tooling for non-developer users ---- */
+const SIMPLE_TABS=["net","dev","git","api","runtimes","tools","kernel"];
+function applySimple(){
+  const on=localStorage.perchSimple==="1";
+  SIMPLE_TABS.forEach(t=>{
+    const b=document.querySelector(`nav button[data-tab="${t}"]`);
+    if(b)b.style.display=on?"none":"";
+  });
+  const g=$("#ngDev");if(g)g.style.display=on?"none":"";
+  const tog=$("#simpleTog");
+  if(tog)tog.textContent=on?"🟢 On":"⚪ Off";
+  if(on&&SIMPLE_TABS.includes(location.hash.replace("#","")))goTab("overview");
+}
+$("#simpleTog")&&($("#simpleTog").onclick=()=>{
+  localStorage.perchSimple=localStorage.perchSimple==="1"?"0":"1";
+  applySimple();
+  toast(localStorage.perchSimple==="1"?"simple mode on":"simple mode off");
+});
+applySimple();
+
 let CAPS=null;
 async function loadCaps(){
   try{CAPS=await api("/api/caps");applyCaps();
