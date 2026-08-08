@@ -93,6 +93,10 @@ step, no cloud.
   night light, Do Not Disturb, Bluetooth, Wi-Fi, GNOME theme, wallpaper (and
   a live wallpaper slideshow), plus dashboard theming: accent colours and
   animated backgrounds.
+- **Tweaks** — GNOME Tweaks-style controls: GTK / icon / cursor themes,
+  interface/monospace/document fonts with antialiasing & hinting, titlebar
+  buttons, clock format, animations, hot corner, workspaces, and mouse /
+  touchpad pointer speed.
 - **Packages** — search, install, remove and upgrade via apt and snap. A
   system password dialog (`pkexec`) appears for privileged actions.
 

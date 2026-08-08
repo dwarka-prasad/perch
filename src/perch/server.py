@@ -2193,6 +2193,74 @@ _TOUCHPAD = "org.gnome.desktop.peripherals.touchpad"
 _COLOR = "org.gnome.settings-daemon.plugins.color"
 _IFACE = "org.gnome.desktop.interface"
 _POWER = "org.gnome.settings-daemon.plugins.power"
+_WM = "org.gnome.desktop.wm.preferences"
+_MUTTER = "org.gnome.mutter"
+_MOUSE = "org.gnome.desktop.peripherals.mouse"
+
+
+def _tweak_options():
+    """Installed GTK/icon/cursor themes and font families, for the Tweaks UI."""
+    gtk = set()
+    for root in ("/usr/share/themes", "~/.themes", "~/.local/share/themes"):
+        try:
+            for d in os.scandir(os.path.expanduser(root)):
+                if d.is_dir():
+                    gtk.add(d.name)
+        except OSError:
+            pass
+    icons, cursors = set(), set()
+    for root in ("/usr/share/icons", "~/.icons", "~/.local/share/icons"):
+        try:
+            for d in os.scandir(os.path.expanduser(root)):
+                if not d.is_dir():
+                    continue
+                if os.path.isdir(os.path.join(d.path, "cursors")):
+                    cursors.add(d.name)
+                if os.path.isfile(os.path.join(d.path, "index.theme")):
+                    icons.add(d.name)
+        except OSError:
+            pass
+    fonts = set()
+    r = subprocess.run(["fc-list", ":", "family"], capture_output=True,
+                       text=True)
+    if r.returncode == 0:
+        for line in r.stdout.splitlines():
+            fam = line.split(",")[0].strip()
+            if fam:
+                fonts.add(fam)
+    return {"gtk_themes": sorted(gtk), "icon_themes": sorted(icons),
+            "cursor_themes": sorted(cursors), "fonts": sorted(fonts)}
+
+
+_TWEAK_BOOLS = {
+    "animations": (_IFACE, "enable-animations"),
+    "hot_corner": (_IFACE, "enable-hot-corners"),
+    "clock_weekday": (_IFACE, "clock-show-weekday"),
+    "clock_date": (_IFACE, "clock-show-date"),
+    "clock_seconds": (_IFACE, "clock-show-seconds"),
+    "ws_dynamic": (_MUTTER, "dynamic-workspaces"),
+}
+_TWEAK_CHOICES = {
+    "font_aa": (_IFACE, "font-antialiasing",
+                ("none", "grayscale", "rgba")),
+    "font_hint": (_IFACE, "font-hinting",
+                  ("none", "slight", "medium", "full")),
+}
+_TWEAK_THEMES = {
+    "gtk_theme": (_IFACE, "gtk-theme", "gtk_themes"),
+    "icon_theme": (_IFACE, "icon-theme", "icon_themes"),
+    "cursor_theme": (_IFACE, "cursor-theme", "cursor_themes"),
+}
+_TWEAK_FONTS = {
+    "font_name": "font-name",
+    "mono_font": "monospace-font-name",
+    "doc_font": "document-font-name",
+}
+_TITLEBAR_LAYOUTS = {
+    "close": "appmenu:close",
+    "max-close": "appmenu:maximize,close",
+    "min-max-close": "appmenu:minimize,maximize,close",
+}
 
 
 def _power_profile():
@@ -2253,6 +2321,26 @@ def get_settings():
         "idle_blank": _gnum("org.gnome.desktop.session", "idle-delay"),
         "suspend_ac": _gnum(_POWER, "sleep-inactive-ac-timeout"),
         "slideshow": slideshow_state(),
+        # Tweaks (GNOME Tweaks-style)
+        "gtk_theme": _gset(_IFACE, "gtk-theme"),
+        "icon_theme": _gset(_IFACE, "icon-theme"),
+        "cursor_theme": _gset(_IFACE, "cursor-theme"),
+        "font_name": _gset(_IFACE, "font-name"),
+        "mono_font": _gset(_IFACE, "monospace-font-name"),
+        "doc_font": _gset(_IFACE, "document-font-name"),
+        "font_aa": _gset(_IFACE, "font-antialiasing"),
+        "font_hint": _gset(_IFACE, "font-hinting"),
+        "animations": _gbool(_IFACE, "enable-animations"),
+        "hot_corner": _gbool(_IFACE, "enable-hot-corners"),
+        "clock_weekday": _gbool(_IFACE, "clock-show-weekday"),
+        "clock_date": _gbool(_IFACE, "clock-show-date"),
+        "clock_seconds": _gbool(_IFACE, "clock-show-seconds"),
+        "titlebar_buttons": _gset(_WM, "button-layout"),
+        "ws_dynamic": _gbool(_MUTTER, "dynamic-workspaces"),
+        "ws_num": _gnum(_WM, "num-workspaces"),
+        "mouse_speed": _gnum(_MOUSE, "speed"),
+        "touchpad_speed": _gnum(_TOUCHPAD, "speed"),
+        "tweaks": _tweak_options(),
     }
 
 
@@ -2347,6 +2435,42 @@ def set_setting(key, value):
         _gset_write(_POWER, "sleep-inactive-ac-type",
                     "nothing" if secs == 0 else "suspend")
         return {"suspend_ac": secs}
+    if key in _TWEAK_BOOLS:
+        sch, k = _TWEAK_BOOLS[key]
+        _gset_write(sch, k, "true" if value else "false")
+        return {key: bool(value)}
+    if key in _TWEAK_CHOICES:
+        sch, k, allowed = _TWEAK_CHOICES[key]
+        if value not in allowed:
+            raise ValueError("bad " + key)
+        _gset_write(sch, k, value)
+        return {key: value}
+    if key in _TWEAK_THEMES:
+        sch, k, opt = _TWEAK_THEMES[key]
+        if value not in _tweak_options()[opt]:
+            raise ValueError("theme not installed")
+        _gset_write(sch, k, value)
+        return {key: value}
+    if key in _TWEAK_FONTS:
+        v = str(value).strip()
+        if not v or len(v) > 80:
+            raise ValueError("bad font")
+        _gset_write(_IFACE, _TWEAK_FONTS[key], v)
+        return {key: v}
+    if key == "titlebar_buttons":
+        if value not in _TITLEBAR_LAYOUTS:
+            raise ValueError("bad button layout")
+        _gset_write(_WM, "button-layout", _TITLEBAR_LAYOUTS[value])
+        return {key: value}
+    if key == "ws_num":
+        n = max(1, min(10, int(value)))
+        _gset_write(_WM, "num-workspaces", str(n))
+        return {key: n}
+    if key in ("mouse_speed", "touchpad_speed"):
+        v = max(-1.0, min(1.0, float(value)))
+        _gset_write(_MOUSE if key == "mouse_speed" else _TOUCHPAD,
+                    "speed", str(v))
+        return {key: v}
     raise ValueError("unknown setting")
 
 

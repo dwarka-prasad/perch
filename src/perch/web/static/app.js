@@ -422,11 +422,55 @@ async function loadSettings(){
       toggle("setTC","Tap to click",s.tap_click,"tap_click")+
       toggle("setNS","Natural scroll",s.natural_scroll,"natural_scroll")+
       slider("setTS","Text size",Math.round((s.text_scale||1)*100),50,200,"%","text_scale");
+    // Tweaks (GNOME Tweaks-style)
+    const tw=s.tweaks||{};
+    const selO=(label,val,opts,key)=>`<div class="row" style="margin-bottom:10px">
+      <span style="width:130px">${label}</span>
+      ${val==null?'<span class="muted">unavailable</span>':
+      `<select class="btn setsel" data-key="${key}" style="max-width:280px">`+opts.map(o=>
+        `<option value="${o[0]}" ${String(o[0])===String(val)?"selected":""}>${o[1]}</option>`).join("")+`</select>`}</div>`;
+    const fontRow=(label,val,key)=>`<div class="row" style="margin-bottom:10px">
+      <span style="width:130px">${label}</span>
+      <input type="text" class="mono fontIn" data-key="${key}" list="fontFams"
+        value="${(val||"").replace(/"/g,"&quot;")}" style="flex:1;max-width:240px"
+        placeholder="Family Size, e.g. Ubuntu 11">
+      <button class="btn small fontApply">set</button></div>`;
+    const lay=s.titlebar_buttons||"";
+    const layCur=lay.includes("minimize")?"min-max-close":lay.includes("maximize")?"max-close":"close";
+    $("#setTweaks").innerHTML=
+      selO("GTK theme",s.gtk_theme,(tw.gtk_themes||[]).map(t=>[t,t]),"gtk_theme")+
+      selO("Icon theme",s.icon_theme,(tw.icon_themes||[]).map(t=>[t,t]),"icon_theme")+
+      selO("Cursor theme",s.cursor_theme,(tw.cursor_themes||[]).map(t=>[t,t]),"cursor_theme")+
+      `<datalist id="fontFams">${(tw.fonts||[]).map(f=>`<option value="${f} 11">`).join("")}</datalist>`+
+      fontRow("Interface font",s.font_name,"font_name")+
+      fontRow("Monospace font",s.mono_font,"mono_font")+
+      fontRow("Document font",s.doc_font,"doc_font")+
+      selO("Antialiasing",s.font_aa,[["grayscale","Standard (grayscale)"],["rgba","Subpixel (LCD)"],["none","None"]],"font_aa")+
+      selO("Hinting",s.font_hint,[["slight","Slight"],["medium","Medium"],["full","Full"],["none","None"]],"font_hint")+
+      selO("Titlebar buttons",layCur,[["close","Close only"],["max-close","Max + Close"],["min-max-close","Min + Max + Close"]],"titlebar_buttons")+
+      toggle("twAnim","Animations",s.animations,"animations")+
+      toggle("twHot","Hot corner",s.hot_corner,"hot_corner")+
+      toggle("twCW","Clock: weekday",s.clock_weekday,"clock_weekday")+
+      toggle("twCD","Clock: date",s.clock_date,"clock_date")+
+      toggle("twCS","Clock: seconds",s.clock_seconds,"clock_seconds")+
+      toggle("twWS","Dynamic workspaces",s.ws_dynamic,"ws_dynamic")+
+      selO("Workspaces",s.ws_num,[1,2,3,4,5,6,7,8,9,10].map(n=>[n,String(n)]),"ws_num")+
+      slider("twMS","Mouse speed",s.mouse_speed==null?null:Math.round(s.mouse_speed*100),-100,100,"","mouse_speed")+
+      slider("twTS","Touchpad speed",s.touchpad_speed==null?null:Math.round(s.touchpad_speed*100),-100,100,"","touchpad_speed");
+    document.querySelectorAll(".fontApply").forEach(b=>b.onclick=async()=>{
+      const inp=b.previousElementSibling;
+      try{await api("/api/setsetting",{method:"POST",
+        body:JSON.stringify({key:inp.dataset.key,value:inp.value.trim()})});
+        toast("font set");}catch(e){toast(e.message,false);}});
     // sliders in the new panels
-    document.querySelectorAll("#setNight input[type=range],#setInput input[type=range]").forEach(sl=>{
-      sl.oninput=()=>$("#"+sl.id+"v").textContent=sl.value+(sl.dataset.key==="night_temp"?"K":"%");
+    const fmtVal=sl=>sl.dataset.key==="night_temp"?sl.value+"K":
+      sl.dataset.key.endsWith("_speed")?(sl.value/100).toFixed(2):sl.value+"%";
+    document.querySelectorAll("#setNight input[type=range],#setInput input[type=range],#setTweaks input[type=range]").forEach(sl=>{
+      $("#"+sl.id+"v").textContent=sl.disabled?"n/a":fmtVal(sl);
+      sl.oninput=()=>$("#"+sl.id+"v").textContent=fmtVal(sl);
       sl.onchange=async()=>{
-        let v=+sl.value;if(sl.dataset.key==="text_scale")v=v/100;
+        let v=+sl.value;
+        if(sl.dataset.key==="text_scale"||sl.dataset.key.endsWith("_speed"))v=v/100;
         try{await api("/api/setsetting",{method:"POST",
           body:JSON.stringify({key:sl.dataset.key,value:v})});}catch(e){toast(e.message,false);}};
     });
@@ -437,8 +481,9 @@ async function loadSettings(){
         setTimeout(loadSettings,400);}catch(e){toast(e.message,false);}};
     });
     document.querySelectorAll(".setsel").forEach(se=>se.onchange=async()=>{
+      const v=se.value===""||isNaN(+se.value)?se.value:+se.value;
       try{await api("/api/setsetting",{method:"POST",
-        body:JSON.stringify({key:se.dataset.key,value:+se.value})});
+        body:JSON.stringify({key:se.dataset.key,value:v})});
         toast("saved");}catch(e){toast(e.message,false);}});
     // wallpaper slideshow
     const ss=s.slideshow||{};
