@@ -74,6 +74,8 @@ step, no cloud.
   running as you in your home directory. A kitty-style multiplexer: multiple
   session tabs, drag-resizable splits (side-by-side or stacked), fullscreen,
   and font zoom, with keyboard shortcuts (Ctrl+Shift+T/E/O/W/±).
+
+  ![Terminal — split panes with tabs and fullscreen](docs/terminal.png)
 - **Network** — listening ports with kill-by-port, public IP, and a speed
   test.
 - **Dev** — Docker containers with live stats, logs, shell, compose control
@@ -139,8 +141,8 @@ dashboard aimed at non-technical users.
 
 ```bash
 git clone https://github.com/dwarka-prasad/perch && cd perch
-make deb                                  # builds dist/perch_1.1.0_all.deb
-sudo apt install ./dist/perch_1.1.0_all.deb
+make deb                                  # builds dist/perch_1.2.0_all.deb
+sudo apt install ./dist/perch_1.2.0_all.deb
 ```
 
 Then launch **Perch** from your app menu, or:

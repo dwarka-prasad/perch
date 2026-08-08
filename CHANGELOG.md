@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0
 
 - **Terminal: tabs, splits & fullscreen** — the Terminal tab is now a
   kitty-style multiplexer. Open multiple session **tabs**, **split** any pane
