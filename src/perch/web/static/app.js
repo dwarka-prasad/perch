@@ -45,7 +45,8 @@ document.querySelectorAll("nav button[data-tab]").forEach(b=>b.onclick=()=>{
     logs:()=>{if(!$("#logView").innerHTML)loadLogs(false);},
     ai:()=>$("#aiIn").focus(),monitor:loadMonitor,
     updates:loadUpdates,packages:()=>$("#pkgQ").focus(),
-    settings:loadSettings,runtimes:loadRuntimes}[b.dataset.tab]||(()=>{}))();
+    settings:loadSettings,runtimes:loadRuntimes,
+    git:loadGit,api:loadApiClient}[b.dataset.tab]||(()=>{}))();
 });
 function goTab(name){
   const b=document.querySelector(`nav button[data-tab="${CSS.escape(name)}"]`);
@@ -1053,9 +1054,44 @@ async function loadNet(){
 
 /* ---- dev ---- */
 async function loadDev(){
-  loadDocker();loadServices();loadTools();
+  loadDocker();loadServices();loadTools();loadDockerStats();loadCompose();
 }
-$("#dockerReload").onclick=()=>loadDocker();
+$("#dockerReload").onclick=()=>{loadDocker();loadDockerStats();loadCompose();};
+$("#dockerPruneImg")&&($("#dockerPruneImg").onclick=()=>{
+  if(confirm("Remove all dangling images?"))
+    runJob(api("/api/dockerprune",{method:"POST",body:JSON.stringify({kind:"images"})}));});
+$("#dockerPruneSys")&&($("#dockerPruneSys").onclick=()=>{
+  if(confirm("Prune stopped containers, unused networks and dangling images?"))
+    runJob(api("/api/dockerprune",{method:"POST",body:JSON.stringify({kind:"system"})}));});
+async function loadDockerStats(){
+  try{
+    const d=await api("/api/dockerstats");
+    if(!d.stats.length){$("#dockerStats").innerHTML="";return;}
+    $("#dockerStats").innerHTML='<h2 style="margin:6px 0 4px">Live stats</h2>'+
+      '<table><thead><tr><th>Container</th><th class="num">CPU</th><th class="num">Mem</th><th>Memory</th><th>Net I/O</th><th>Block I/O</th></tr></thead><tbody>'+
+      d.stats.map(s=>`<tr><td><b>${esc(s.name)}</b></td>
+        <td class="num">${esc(s.cpu||"")}</td><td class="num">${esc(s.mem||"")}</td>
+        <td class="mono" style="font-size:11px">${esc(s.memuse||"")}</td>
+        <td class="mono" style="font-size:11px">${esc(s.net||"")}</td>
+        <td class="mono" style="font-size:11px">${esc(s.block||"")}</td></tr>`).join("")+
+      '</tbody></table>';
+  }catch(e){$("#dockerStats").innerHTML="";}
+}
+async function loadCompose(){
+  try{
+    const d=await api("/api/dockercompose");
+    if(!d.projects.length){$("#dockerCompose").innerHTML="";return;}
+    $("#dockerCompose").innerHTML='<h2 style="margin:10px 0 4px">Compose projects</h2>'+
+      d.projects.map(p=>`<div class="row" style="margin-bottom:6px">
+        <span class="pill">${esc(p.name)} · ${p.running}/${p.total} up</span>
+        <button class="btn small" data-cp="up" data-proj="${esc(p.name)}">Up</button>
+        <button class="btn small" data-cp="restart" data-proj="${esc(p.name)}">Restart</button>
+        <button class="btn small danger" data-cp="down" data-proj="${esc(p.name)}">Down</button></div>`).join("");
+    document.querySelectorAll("[data-cp]").forEach(b=>b.onclick=()=>runJob(
+      api("/api/composeaction",{method:"POST",
+        body:JSON.stringify({project:b.dataset.proj,action:b.dataset.cp})})));
+  }catch(e){$("#dockerCompose").innerHTML="";}
+}
 async function loadDocker(){
   $("#dockerBody").textContent="querying docker…";
   try{
@@ -1069,7 +1105,8 @@ async function loadDocker(){
       <td class="num" style="white-space:nowrap">
         ${c.state==="running"
           ?`<button class="btn small" data-dk="stop" data-id="${c.id}">Stop</button>
-            <button class="btn small" data-dk="restart" data-id="${c.id}">Restart</button>`
+            <button class="btn small" data-dk="restart" data-id="${c.id}">Restart</button>
+            <button class="btn small" data-dkexec="${c.id}">Shell</button>`
           :`<button class="btn small" data-dk="start" data-id="${c.id}">Start</button>
             <button class="btn small danger" data-dk="rm" data-id="${c.id}">Remove</button>`}
         <button class="btn small" data-dklog="${c.id}">Logs</button></td></tr>`).join("")+
@@ -1088,6 +1125,10 @@ async function loadDocker(){
         const pre=$("#dockerLogs");pre.style.display="block";
         pre.textContent=r.logs||"(no output)";pre.scrollTop=pre.scrollHeight;}
       catch(e){toast(e.message,false);}});
+    document.querySelectorAll("[data-dkexec]").forEach(b=>b.onclick=async()=>{
+      try{await api("/api/dockerexec",{method:"POST",
+        body:JSON.stringify({id:b.dataset.dkexec})});
+        toast("opening shell in a terminal…");}catch(e){toast(e.message,false);}});
   }catch(e){$("#dockerBody").innerHTML=`<span class="muted">${esc(e.message)}</span>`;}
 }
 async function loadServices(){
@@ -1522,6 +1563,146 @@ $("#aiIn").onkeydown=e=>{
 document.querySelectorAll(".aiq").forEach(b=>b.onclick=()=>aiAsk(b.textContent));
 $("#aiReset").onclick=()=>{aiFresh=true;$("#aiChat").innerHTML="";
   toast("new conversation started");};
+$("#aiHealth")&&($("#aiHealth").onclick=async()=>{
+  aiBubble("me","🩺 Generate a system health report");
+  const th=aiBubble("bot thinking","Analyzing your system…");
+  $("#aiHealth").disabled=true;
+  try{const r=await api("/api/health",{method:"POST",body:"{}"});
+    th.classList.remove("thinking");th.innerHTML=mdLite(r.text||"(no report)");}
+  catch(e){th.classList.remove("thinking");th.textContent="⚠ "+e.message;}
+  $("#aiHealth").disabled=false;
+  $("#aiChat").scrollTop=$("#aiChat").scrollHeight;});
+// minimal markdown → HTML for AI output (bold, code, headings, lists)
+function mdLite(t){
+  return esc(t)
+    .replace(/^### (.*)$/gm,"<b>$1</b>")
+    .replace(/\*\*(.+?)\*\*/g,"<b>$1</b>")
+    .replace(/`([^`]+)`/g,'<code>$1</code>')
+    .replace(/```[\w]*\n?([\s\S]*?)```/g,'<pre class="mono" style="background:var(--track);padding:8px;border-radius:6px;overflow:auto">$1</pre>')
+    .replace(/\n/g,"<br>");
+}
+
+/* ---- git projects ---- */
+async function loadGit(){
+  $("#gitStat").textContent="scanning…";
+  try{
+    const d=await api("/api/gitrepos");
+    $("#gitStat").textContent=`${d.repos.length} repos`;
+    $("#gitTable tbody").innerHTML=d.repos.map(r=>{
+      const badge=[];
+      if(r.dirty)badge.push(`<span class="pill" style="border-color:var(--serious);color:var(--serious)">${r.dirty} changed</span>`);
+      if(r.ahead)badge.push(`<span class="pill">↑${r.ahead}</span>`);
+      if(r.behind)badge.push(`<span class="pill" style="border-color:var(--crit);color:var(--crit)">↓${r.behind}</span>`);
+      if(!badge.length)badge.push('<span class="muted" style="font-size:12px">clean</span>');
+      return `<tr><td><b>${esc(r.name)}</b><br>
+        <span class="muted" style="font-size:11px">${esc(r.last||"")}</span></td>
+        <td><span class="pill">${esc(r.branch)}</span></td>
+        <td>${badge.join(" ")}</td>
+        <td class="num" style="white-space:nowrap">
+          <button class="btn small" data-git="fetch" data-p="${esc(r.path)}">Fetch</button>
+          <button class="btn small" data-git="pull" data-p="${esc(r.path)}">Pull</button>
+          <button class="btn small" data-git="stash" data-p="${esc(r.path)}">Stash</button>
+          <button class="btn small" data-gitterm="${esc(r.path)}">Terminal</button></td></tr>`;
+    }).join("")||'<tr><td class="muted" style="padding:12px">no git repos found in your home</td></tr>';
+    document.querySelectorAll("[data-git]").forEach(b=>b.onclick=()=>runJob(
+      api("/api/gitaction",{method:"POST",
+        body:JSON.stringify({path:b.dataset.p,action:b.dataset.git})})));
+    document.querySelectorAll("[data-gitterm]").forEach(b=>b.onclick=async()=>{
+      try{await api("/api/terminal",{method:"POST",body:JSON.stringify({path:b.dataset.gitterm})});
+        toast("terminal opened");}catch(e){toast(e.message,false);}});
+  }catch(e){$("#gitStat").textContent="";toast(e.message,false);}
+}
+$("#gitReload")&&($("#gitReload").onclick=loadGit);
+
+/* ---- API client (mini-Postman) ---- */
+let apiStore={collections:[],environments:{},active_env:"",history:[]};
+async function loadApiClient(){
+  try{
+    apiStore=await api("/api/httpstore");
+    renderApiEnv();renderApiCollections();renderApiHistory();
+  }catch(e){toast(e.message,false);}
+}
+function renderApiEnv(){
+  const sel=$("#apiEnv");const names=Object.keys(apiStore.environments||{});
+  sel.innerHTML='<option value="">no environment</option>'+
+    names.map(n=>`<option value="${esc(n)}" ${n===apiStore.active_env?"selected":""}>${esc(n)}</option>`).join("");
+  sel.onchange=()=>{apiStore.active_env=sel.value;saveApiStore();};
+}
+function renderApiCollections(){
+  const box=$("#apiCollections");
+  const cols=apiStore.collections||[];
+  if(!cols.length){box.innerHTML='<span class="muted">no saved requests</span>';return;}
+  box.innerHTML=cols.map((c,ci)=>`<div style="margin-bottom:8px">
+    <b style="font-size:12.5px">${esc(c.name)}</b>${(c.requests||[]).map((r,ri)=>`
+    <div class="palItem" data-ci="${ci}" data-ri="${ri}" style="padding:4px 8px">
+      <span class="mono" style="font-size:10.5px;color:var(--s1)">${esc(r.method)}</span>
+      <span style="font-size:12px">${esc(r.name||r.url)}</span>
+      <span class="hint" data-del="${ci}:${ri}" style="color:var(--crit)">✕</span></div>`).join("")}</div>`).join("");
+  box.querySelectorAll("[data-ci]").forEach(el=>el.onclick=e=>{
+    if(e.target.dataset.del)return;
+    const r=apiStore.collections[+el.dataset.ci].requests[+el.dataset.ri];
+    $("#hMethod2").value=r.method;$("#hUrl2").value=r.url;
+    $("#hHeaders2").value=r.headers||"";$("#hBody2").value=r.body||"";});
+  box.querySelectorAll("[data-del]").forEach(el=>el.onclick=e=>{
+    e.stopPropagation();const[ci,ri]=el.dataset.del.split(":").map(Number);
+    apiStore.collections[ci].requests.splice(ri,1);saveApiStore();renderApiCollections();});
+}
+function renderApiHistory(){
+  const h=apiStore.history||[];
+  $("#apiHistory").innerHTML=h.length?h.slice(0,15).map(e=>`
+    <div class="palItem" data-hurl="${esc(e.url)}" data-hm="${esc(e.method)}" style="padding:3px 8px">
+      <span class="mono" style="color:${e.status<400?"var(--goodtext)":"var(--crit)"}">${e.status}</span>
+      <span class="mono" style="font-size:10.5px">${esc(e.method)}</span>
+      <span style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.url)}</span>
+      <span class="hint">${e.ms}ms</span></div>`).join(""):'<span class="muted">—</span>';
+  $("#apiHistory").querySelectorAll("[data-hurl]").forEach(el=>el.onclick=()=>{
+    $("#hUrl2").value=el.dataset.hurl;$("#hMethod2").value=el.dataset.hm;});
+}
+async function saveApiStore(){
+  try{await api("/api/httpstore",{method:"POST",body:JSON.stringify({
+    collections:apiStore.collections,environments:apiStore.environments,
+    active_env:apiStore.active_env})});}catch(e){toast(e.message,false);}
+}
+function subVars(s){
+  const env=apiStore.environments[apiStore.active_env];
+  if(!env||!env.vars)return s;
+  return s.replace(/\{\{(\w+)\}\}/g,(m,k)=>env.vars[k]!=null?env.vars[k]:m);
+}
+$("#hSend2")&&($("#hSend2").onclick=async()=>{
+  const url=subVars($("#hUrl2").value.trim());if(!url)return toast("enter a URL",false);
+  $("#hResMeta2").innerHTML='<span class="muted">sending…</span>';$("#hRes2").style.display="none";
+  try{
+    const r=await api("/api/http",{method:"POST",body:JSON.stringify({
+      method:$("#hMethod2").value,url,headers:subVars($("#hHeaders2").value),
+      body:subVars($("#hBody2").value)})});
+    const ok=r.status<400;
+    $("#hResMeta2").innerHTML=`<span class="pill" style="border-color:${ok?"var(--good)":"var(--crit)"}">${ok?"✓":"✗"} ${r.status} ${esc(r.reason||"")}</span>
+      <span class="muted">${r.ms} ms · ${fmtB(r.size)}</span>
+      <button class="btn small" id="hFmt2">format JSON</button>`;
+    $("#hRes2").textContent=r.body||"(empty)";$("#hRes2").style.display="block";
+    $("#hFmt2").onclick=()=>{try{$("#hRes2").textContent=JSON.stringify(JSON.parse(r.body),null,2);}catch(e){toast("not JSON",false);}};
+    loadApiClient();  // refresh history
+  }catch(e){$("#hResMeta2").innerHTML="";toast(e.message,false);}
+});
+$("#apiSaveReq")&&($("#apiSaveReq").onclick=()=>{
+  const name=prompt("Save request as:");if(!name)return;
+  let col=apiStore.collections[0];
+  if(!col){col={name:"My requests",requests:[]};apiStore.collections.push(col);}
+  col.requests.push({name,method:$("#hMethod2").value,url:$("#hUrl2").value,
+    headers:$("#hHeaders2").value,body:$("#hBody2").value});
+  saveApiStore();renderApiCollections();toast("saved");
+});
+$("#apiEnvEdit")&&($("#apiEnvEdit").onclick=()=>{
+  const name=$("#apiEnv").value||prompt("New environment name:");if(!name)return;
+  const env=apiStore.environments[name]||{vars:{}};
+  const cur=Object.entries(env.vars||{}).map(([k,v])=>`${k}=${v}`).join("\n");
+  const edited=prompt(`Variables for "${name}" (one per line, key=value):`,cur);
+  if(edited==null)return;
+  const vars={};edited.split("\n").forEach(l=>{const i=l.indexOf("=");
+    if(i>0)vars[l.slice(0,i).trim()]=l.slice(i+1).trim();});
+  apiStore.environments[name]={vars};apiStore.active_env=name;
+  saveApiStore();renderApiEnv();toast("environment saved");
+});
 
 /* ---- kernel ---- */
 function copyText(t){navigator.clipboard.writeText(t).then(()=>toast("command copied"),

@@ -1113,6 +1113,226 @@ def ask_ai(prompt, include_snapshot=True, reset=False, extra=""):
         AI_LOCK.release()
 
 
+def health_report():
+    """Rich system context → prioritized AI recommendations (markdown)."""
+    ctx = [ai_snapshot()]
+    try:
+        u = apt_updates()
+        ctx.append(f"Updates: {u['count']} pending ({u['security']} security)")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        fs = services().get("failed_system", [])
+        if fs:
+            ctx.append("Failed services: "
+                       + ", ".join(s["name"] for s in fs[:10]))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        pub = [f"{p['port']}/{p['name'] or '?'}"
+               for p in net_ports()["listen"] if p.get("public")]
+        if pub:
+            ctx.append("Network-visible ports: " + ", ".join(pub[:15]))
+    except Exception:  # noqa: BLE001
+        pass
+    prompt = (
+        "You are a Linux sysadmin reviewing this machine. Using ONLY the data "
+        "below, give a concise health report as markdown: a one-line overall "
+        "verdict, then a prioritized list (critical → nice-to-have) of concrete "
+        "issues with the exact command to fix each. Skip anything that looks "
+        "healthy. Be specific and brief.\n\n" + "\n".join(ctx))
+    return ask_ai(prompt, include_snapshot=False, reset=True)
+
+
+# ------------------------------------------------------ http collections -----
+
+def _http_file():
+    return os.path.join(CFG_DIR, "http.json")
+
+
+def _http_store():
+    try:
+        with open(_http_file()) as f:
+            s = json.load(f)
+    except (OSError, ValueError):
+        s = {}
+    s.setdefault("collections", [])
+    s.setdefault("environments", {})
+    s.setdefault("active_env", "")
+    s.setdefault("history", [])
+    return s
+
+
+def http_store_get():
+    return _http_store()
+
+
+def http_store_save(body):
+    os.makedirs(CFG_DIR, exist_ok=True)
+    s = _http_store()
+    for k in ("collections", "environments", "active_env"):
+        if k in body:
+            s[k] = body[k]
+    with open(_http_file(), "w") as f:
+        json.dump(s, f)
+    return s
+
+
+def http_history_add(entry):
+    s = _http_store()
+    s["history"].insert(0, entry)
+    s["history"] = s["history"][:50]
+    os.makedirs(CFG_DIR, exist_ok=True)
+    with open(_http_file(), "w") as f:
+        json.dump(s, f)
+
+
+# ------------------------------------------------------- git projects --------
+
+GIT_SKIP = {"node_modules", ".cache", "snap", ".local", ".cargo", ".rustup",
+            ".npm", ".venv", "venv", "__pycache__", ".git"}
+
+
+def _git(path, *args, timeout=15):
+    return subprocess.run(["git", "-C", path, *args], capture_output=True,
+                          text=True, timeout=timeout)
+
+
+def git_repos():
+    repos, deadline = [], time.time() + 12
+    roots = [HOME]
+    for base in roots:
+        for root, dirs, _ in os.walk(base):
+            if time.time() > deadline:
+                break
+            depth = root[len(base):].count(os.sep)
+            if depth > 3:
+                dirs[:] = []
+                continue
+            dirs[:] = [d for d in dirs if d not in GIT_SKIP
+                       and not (depth == 0 and d.startswith("."))]
+            if ".git" in os.listdir(root) if os.path.isdir(root) else False:
+                pass
+            if os.path.isdir(os.path.join(root, ".git")):
+                repos.append(root)
+                dirs[:] = []  # don't descend into a repo
+    out = []
+    for path in sorted(repos)[:60]:
+        try:
+            branch = _git(path, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+            porcelain = _git(path, "status", "--porcelain").stdout.splitlines()
+            ahead = behind = 0
+            rb = _git(path, "rev-list", "--left-right", "--count",
+                      "@{upstream}...HEAD")
+            if rb.returncode == 0 and rb.stdout.strip():
+                behind, ahead = (int(x) for x in rb.stdout.split())
+            last = _git(path, "log", "-1", "--format=%cr|%s").stdout.strip()
+            out.append({
+                "path": path,
+                "name": os.path.relpath(path, HOME),
+                "branch": branch or "?",
+                "dirty": len(porcelain),
+                "ahead": ahead, "behind": behind,
+                "last": last,
+            })
+        except Exception:  # noqa: BLE001
+            continue
+    out.sort(key=lambda r: (-r["dirty"], -r["ahead"], r["name"]))
+    return {"repos": out}
+
+
+def git_action(path, action):
+    path = os.path.realpath(path)
+    if not os.path.isdir(os.path.join(path, ".git")) \
+            or not path.startswith(HOME):
+        raise ValueError("not a git repo in your home")
+    if action == "fetch":
+        return start_job(["git", "-C", path, "fetch", "--all", "--prune"],
+                         f"git fetch — {os.path.basename(path)}")
+    if action == "pull":
+        return start_job(["git", "-C", path, "pull", "--ff-only"],
+                         f"git pull — {os.path.basename(path)}")
+    if action == "stash":
+        return start_job(["git", "-C", path, "stash", "push", "-u"],
+                         f"git stash — {os.path.basename(path)}")
+    raise ValueError("unknown git action")
+
+
+# ---------------------------------------------------- docker (extended) ------
+
+
+def docker_stats():
+    r = subprocess.run(["docker", "stats", "--no-stream", "--format",
+                        "{{json .}}"], capture_output=True, text=True,
+                       timeout=15)
+    rows = []
+    for line in r.stdout.splitlines():
+        try:
+            c = json.loads(line)
+            rows.append({"name": c.get("Name"), "cpu": c.get("CPUPerc"),
+                         "mem": c.get("MemPerc"), "memuse": c.get("MemUsage"),
+                         "net": c.get("NetIO"), "block": c.get("BlockIO")})
+        except json.JSONDecodeError:
+            continue
+    return {"stats": rows}
+
+
+def docker_compose_projects():
+    r = subprocess.run(["docker", "ps", "-a", "--format", "{{json .}}"],
+                       capture_output=True, text=True, timeout=10)
+    projects = {}
+    for line in r.stdout.splitlines():
+        try:
+            c = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        labels = c.get("Labels", "")
+        proj = None
+        for kv in labels.split(","):
+            if kv.startswith("com.docker.compose.project="):
+                proj = kv.split("=", 1)[1]
+        if not proj:
+            continue
+        p = projects.setdefault(proj, {"name": proj, "running": 0, "total": 0})
+        p["total"] += 1
+        if c.get("State") == "running":
+            p["running"] += 1
+    return {"projects": sorted(projects.values(), key=lambda x: x["name"])}
+
+
+def docker_compose_action(project, action):
+    if action not in ("up", "down", "restart") \
+            or not re.fullmatch(r"[\w.-]+", project or ""):
+        raise ValueError("bad compose action")
+    sub = {"up": ["up", "-d"], "down": ["down"], "restart": ["restart"]}[action]
+    return start_job(["docker", "compose", "-p", project, *sub],
+                     f"compose {action} — {project}")
+
+
+def docker_prune(kind):
+    if kind == "images":
+        return start_job(["docker", "image", "prune", "-f"],
+                         "Prune dangling images")
+    if kind == "system":
+        return start_job(["docker", "system", "prune", "-f"],
+                         "Prune stopped containers, networks, dangling images")
+    raise ValueError("bad prune kind")
+
+
+def docker_exec_terminal(cid):
+    if not re.fullmatch(r"[0-9a-f]{4,64}", cid):
+        raise ValueError("bad container id")
+    if shutil.which("gnome-terminal"):
+        subprocess.Popen(["gnome-terminal", "--", "bash", "-c",
+                          f"docker exec -it {cid} sh; exec bash"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        subprocess.Popen(["x-terminal-emulator", "-e",
+                          f"docker exec -it {cid} sh"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return cid
+
+
 # --------------------------------------------------------------- monitor -----
 
 CFG_DIR = os.path.join(HOME, ".config/perch")
@@ -2228,6 +2448,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._raw(qs.get("path", [""])[0])
             if route == "/api/raw":
                 return self._raw(qs.get("path", [""])[0])
+            if route == "/api/httpstore":
+                return self._json(http_store_get())
+            if route == "/api/gitrepos":
+                return self._json(git_repos())
+            if route == "/api/dockerstats":
+                return self._json(docker_stats())
+            if route == "/api/dockercompose":
+                return self._json(docker_compose_projects())
             return self._err("not found", 404)
         except Exception as e:  # noqa: BLE001 — surfaced to the UI
             return self._err(e)
@@ -2292,11 +2520,17 @@ class Handler(BaseHTTPRequestHandler):
                        "working 🎉", critical=False)
                 return self._json({"ok": True})
             if route == "/api/http":
-                return self._json(http_request(body.get("method"),
-                                               body.get("url"),
-                                               body.get("headers", ""),
-                                               body.get("body", ""),
-                                               body.get("timeout", 20)))
+                res = http_request(body.get("method"), body.get("url"),
+                                   body.get("headers", ""), body.get("body", ""),
+                                   body.get("timeout", 20))
+                try:
+                    http_history_add({"t": time.time(),
+                                      "method": (body.get("method") or "GET"),
+                                      "url": body.get("url"),
+                                      "status": res["status"], "ms": res["ms"]})
+                except Exception:  # noqa: BLE001
+                    pass
+                return self._json(res)
             if route == "/api/yaml":
                 try:
                     return self._json({"ok": True, "text": yaml_convert(
@@ -2318,6 +2552,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(site_shot(body["url"]))
             if route == "/api/setruntime":
                 return self._json(set_runtime(body["kind"], body["value"]))
+            if route == "/api/httpstore":
+                return self._json(http_store_save(body))
+            if route == "/api/gitaction":
+                return self._json(git_action(body["path"], body["action"]))
+            if route == "/api/composeaction":
+                return self._json(docker_compose_action(body["project"],
+                                                        body["action"]))
+            if route == "/api/dockerprune":
+                return self._json(docker_prune(body["kind"]))
+            if route == "/api/dockerexec":
+                return self._json({"ok": True,
+                                   "id": docker_exec_terminal(body["id"])})
+            if route == "/api/health":
+                return self._json(health_report())
             return self._err("not found", 404)
         except psutil.AccessDenied:
             return self._err("permission denied — that process is not yours", 403)

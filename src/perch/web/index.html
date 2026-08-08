@@ -28,6 +28,8 @@
   <div class="ngroup">Developer</div>
   <button data-tab="net">🌐 Network</button>
   <button data-tab="dev">🧰 Dev</button>
+  <button data-tab="git">🔀 Git</button>
+  <button data-tab="api">📮 API client</button>
   <button data-tab="runtimes">📚 Runtimes</button>
   <button data-tab="tools">🔧 Tools</button>
   <div class="ngroup">Assistant</div>
@@ -238,16 +240,64 @@
 
   <section id="tab-dev">
     <div class="panel"><h2>Docker containers
-      <button class="btn small" id="dockerReload" style="margin-left:8px">↻</button></h2>
+      <button class="btn small" id="dockerReload" style="margin-left:8px">↻</button>
+      <button class="btn small" id="dockerPruneImg">prune images</button>
+      <button class="btn small" id="dockerPruneSys">prune system</button></h2>
       <div id="dockerBody" class="muted">…</div>
       <pre id="dockerLogs" class="mono" style="display:none;max-height:320px;
         overflow:auto;background:var(--track);padding:10px;border-radius:8px;
         white-space:pre-wrap;font-size:11.5px"></pre>
+      <div id="dockerStats" style="margin-top:10px"></div>
+      <div id="dockerCompose" style="margin-top:10px"></div>
       <div id="dockerImgs" style="margin-top:10px"></div></div>
     <div class="panel"><h2>Services — your user scope <span class="muted">(system-failed shown below)</span></h2>
       <table id="svct"><tbody></tbody></table>
       <div id="svcFailed" style="margin-top:10px"></div></div>
     <div class="panel"><h2>Toolchain</h2><div id="tools" class="muted">…</div></div>
+  </section>
+
+  <section id="tab-git">
+    <div class="panel"><h2>Git repositories
+      <button class="btn small" id="gitReload" style="margin-left:8px">↻ Rescan</button>
+      <span class="muted" id="gitStat" style="font-size:12px"></span></h2>
+      <table id="gitTable"><tbody></tbody></table>
+      <div class="muted" style="font-size:12px;margin-top:8px">Scans your home
+        directory (depth 3). Pull is fast-forward only; stash includes untracked.</div>
+    </div>
+  </section>
+
+  <section id="tab-api">
+    <div class="panel"><h2>API client <span class="muted">— saved requests, environments, history</span></h2>
+      <div class="row">
+        <span class="muted" style="font-size:12px">Environment</span>
+        <select id="apiEnv" class="btn"></select>
+        <button class="btn small" id="apiEnvEdit">edit vars</button>
+        <span style="flex:1"></span>
+        <button class="btn small" id="apiSaveReq">＋ Save current request</button>
+      </div>
+      <div style="display:grid;grid-template-columns:240px 1fr;gap:14px;margin-top:6px">
+        <div>
+          <div id="apiCollections" class="muted" style="font-size:12.5px">no saved requests</div>
+          <h2 style="margin:14px 0 4px">History</h2>
+          <div id="apiHistory" class="muted" style="font-size:11.5px">—</div>
+        </div>
+        <div>
+          <div class="row">
+            <select id="hMethod2" class="btn"><option>GET</option><option>POST</option>
+              <option>PUT</option><option>PATCH</option><option>DELETE</option>
+              <option>HEAD</option><option>OPTIONS</option></select>
+            <input type="text" id="hUrl2" placeholder="{{base}}/api/health" style="flex:1;min-width:220px">
+            <button class="btn" id="hSend2">Send ▶</button>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <textarea id="hHeaders2" class="tin" style="height:70px" placeholder="Header: value (one per line)"></textarea>
+            <textarea id="hBody2" class="tin" style="height:70px" placeholder="request body"></textarea>
+          </div>
+          <div id="hResMeta2" class="row" style="margin:8px 0 4px"></div>
+          <pre id="hRes2" class="mono" style="display:none;font-size:12px;background:var(--track);padding:10px;border-radius:8px;white-space:pre-wrap;max-height:300px;overflow:auto"></pre>
+        </div>
+      </div>
+    </div>
   </section>
 
   <section id="tab-storage">
@@ -320,6 +370,7 @@
         <span style="flex:1"></span>
         <label class="pill"><input type="checkbox" id="aiSnap" checked>
           include system snapshot</label>
+        <button class="btn small" id="aiHealth">🩺 Health report</button>
         <button class="btn small" id="aiReset">＋ New conversation</button>
       </div>
       <div class="row" style="margin-bottom:8px">
