@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Terminal: tabs, splits & fullscreen** — the Terminal tab is now a
+  kitty-style multiplexer. Open multiple session **tabs**, **split** any pane
+  side-by-side (Ctrl+Shift+E) or stacked (Ctrl+Shift+O) with drag-resizable
+  gutters, jump to real **fullscreen**, and zoom the font (Ctrl+Shift+±). Each
+  pane is its own shell/pty; click a pane to focus it. Keyboard: Ctrl+Shift+T
+  new tab, Ctrl+Shift+W close pane.
+
 ## 1.1.0
 
 A robustness + capability release: hardened internals, distro-agnostic package

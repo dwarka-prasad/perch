@@ -238,13 +238,20 @@
   </section>
 
   <section id="tab-term">
-    <div class="panel" style="padding:10px">
-      <div class="row" style="margin-bottom:8px">
-        <b>Terminal</b>
-        <span class="muted" style="font-size:12px">a real shell in your home directory — runs as you</span>
+    <div class="panel term-card" id="termCard" style="padding:8px">
+      <div class="termbar">
+        <div class="term-tabs" id="termTabs"></div>
+        <button class="btn small term-newtab" id="termNewTab" title="New tab (Ctrl+Shift+T)">＋</button>
         <span class="spacer" style="flex:1"></span>
-        <button class="btn small" id="termReset">↻ New session</button></div>
-      <div id="termHost" style="height:70vh;background:#000;border-radius:8px;padding:6px"></div>
+        <button class="btn small" id="termSplitR" title="Split right (Ctrl+Shift+E)">⬌ Split</button>
+        <button class="btn small" id="termSplitD" title="Split down (Ctrl+Shift+O)">⬍ Split</button>
+        <button class="btn small" id="termFontDn" title="Smaller (Ctrl+Shift+-)">A−</button>
+        <button class="btn small" id="termFontUp" title="Larger (Ctrl+Shift+=)">A+</button>
+        <button class="btn small" id="termClose" title="Close pane (Ctrl+Shift+W)">✕ Pane</button>
+        <button class="btn small" id="termFull" title="Fullscreen (F11)">⛶ Fullscreen</button>
+      </div>
+      <div id="termStage"></div>
+      <div class="muted term-hint">a real shell in your home dir · runs as you · Ctrl+Shift+T new tab · Ctrl+Shift+E/O split · click a pane to focus</div>
     </div>
   </section>
 

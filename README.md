@@ -71,7 +71,9 @@ step, no cloud.
 
 ### Developer tools
 - **Terminal** — a real shell in the browser (a proper pty, not a command box),
-  running as you in your home directory.
+  running as you in your home directory. A kitty-style multiplexer: multiple
+  session tabs, drag-resizable splits (side-by-side or stacked), fullscreen,
+  and font zoom, with keyboard shortcuts (Ctrl+Shift+T/E/O/W/±).
 - **Network** — listening ports with kill-by-port, public IP, and a speed
   test.
 - **Dev** — Docker containers with live stats, logs, shell, compose control

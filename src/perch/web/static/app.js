@@ -1105,34 +1105,173 @@ $("#codeHere").onclick=async()=>{
   try{const r=await api("/api/editor",{method:"POST",body:JSON.stringify({path:fPath})});
     toast("opened in "+r.editor);}catch(e){toast(e.message,false);}};
 /* ---- capabilities: hide buttons for apps this machine doesn't have ---- */
-/* ---- web terminal (xterm.js over a websocket to a pty) ---- */
-let TERM=null,TERM_WS=null,TERM_FIT=null;
-function openTerminal(reset){
-  if(reset&&TERM_WS){try{TERM_WS.close();}catch(e){}TERM_WS=null;}
-  if(!TERM){
-    TERM=new Terminal({fontSize:13,fontFamily:"ui-monospace,Menlo,monospace",
-      cursorBlink:true,theme:{background:"#000000"}});
-    TERM_FIT=new FitAddon.FitAddon();TERM.loadAddon(TERM_FIT);
-    TERM.open($("#termHost"));
-    TERM.onData(d=>TERM_WS&&TERM_WS.readyState===1&&TERM_WS.send("i"+d));
-    new ResizeObserver(()=>{try{TERM_FIT.fit();sendResize();}catch(e){}})
-      .observe($("#termHost"));
-  }
-  setTimeout(()=>{try{TERM_FIT.fit();}catch(e){}},30);
-  if(TERM_WS&&TERM_WS.readyState<=1)return;
+/* ---- web terminal — kitty-style tabs + splits + fullscreen ------------------
+   Each pane is an independent xterm + websocket + pty. A tab holds a binary
+   split-tree of panes (leaf {pane} | split {dir,ratio,a,b}); the stage renders
+   that tree into flex containers with draggable gutters. */
+let TERMTABS=[],TERM_ACTIVE=null,TERM_FONT=13,_termInit=false,_paneSeq=0;
+
+function _paneFit(p){try{p.fit.fit();
+  if(p.ws&&p.ws.readyState===1)
+    p.ws.send("r"+JSON.stringify({cols:p.term.cols,rows:p.term.rows}));
+}catch(e){}}
+function _fitAll(){const t=curTab();if(t)_leaves(t.layout).forEach(_paneFit);}
+
+function makePane(){
+  const id=++_paneSeq;
+  const el=document.createElement("div");el.className="term-pane";
+  const host=document.createElement("div");host.className="xt";el.appendChild(host);
+  const term=new Terminal({fontSize:TERM_FONT,
+    fontFamily:"ui-monospace,Menlo,'Cascadia Code',monospace",
+    cursorBlink:true,scrollback:5000,theme:{background:"#000000"}});
+  const fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open(host);
+  const p={id,el,host,term,fit,ws:null,ro:null,name:"shell"};
+  term.onData(d=>p.ws&&p.ws.readyState===1&&p.ws.send("i"+d));
+  term.onTitleChange(t=>{p.name=t||"shell";renderTabs();});
+  term.attachCustomKeyEventHandler(e=>{
+    if(e.type!=="keydown"||!e.ctrlKey||!e.shiftKey)return true;
+    const k=e.key.toLowerCase();const act={t:()=>newTab(),e:()=>splitActive("row"),
+      o:()=>splitActive("col"),w:()=>closePane(),
+      "+":()=>fontZoom(1),"=":()=>fontZoom(1),"_":()=>fontZoom(-1),
+      "-":()=>fontZoom(-1)}[k];
+    if(act){e.preventDefault();act();return false;}
+    return true;
+  });
+  el.addEventListener("mousedown",()=>setActivePane(p));
+  p.ro=new ResizeObserver(()=>_paneFit(p));p.ro.observe(el);
+  connectPane(p);
+  return p;
+}
+function connectPane(p){
   const proto=location.protocol==="https:"?"wss:":"ws:";
-  TERM_WS=new WebSocket(`${proto}//${location.host}/ws/term`);
-  TERM_WS.binaryType="arraybuffer";
-  TERM_WS.onopen=()=>{if(reset)TERM.reset();sendResize();TERM.focus();};
-  TERM_WS.onmessage=e=>TERM.write(typeof e.data==="string"?e.data:
+  p.ws=new WebSocket(`${proto}//${location.host}/ws/term`);
+  p.ws.binaryType="arraybuffer";
+  p.ws.onopen=()=>{_paneFit(p);};
+  p.ws.onmessage=e=>p.term.write(typeof e.data==="string"?e.data:
     new Uint8Array(e.data));
-  TERM_WS.onclose=()=>TERM.write("\r\n\x1b[90m[session ended — “New session” to reconnect]\x1b[0m\r\n");
+  p.ws.onclose=()=>p.term.write(
+    "\r\n\x1b[90m[session ended]\x1b[0m\r\n");
 }
-function sendResize(){
-  if(TERM&&TERM_WS&&TERM_WS.readyState===1)
-    TERM_WS.send("r"+JSON.stringify({cols:TERM.cols,rows:TERM.rows}));
+function disposePane(p){try{p.ro.disconnect();}catch(e){}
+  try{p.ws.close();}catch(e){}try{p.term.dispose();}catch(e){}}
+
+/* --- split tree helpers --- */
+function _leaves(n,out){out=out||[];if(n.leaf)out.push(n.pane);
+  else{_leaves(n.a,out);_leaves(n.b,out);}return out;}
+function _replaceLeaf(n,pane,repl){
+  if(n.leaf)return n.pane===pane?repl:n;
+  n.a=_replaceLeaf(n.a,pane,repl);n.b=_replaceLeaf(n.b,pane,repl);return n;}
+function _removeLeaf(n,pane){
+  if(n.leaf)return n.pane===pane?null:n;
+  const a=_removeLeaf(n.a,pane),b=_removeLeaf(n.b,pane);
+  if(!a)return b;if(!b)return a;n.a=a;n.b=b;return n;}
+function curTab(){return TERMTABS.find(t=>t.id===TERM_ACTIVE);}
+
+function _buildNode(node){
+  if(node.leaf){node.pane.el.style.flex="1 1 0";return node.pane.el;}
+  const box=document.createElement("div");
+  box.className="term-layout"+(node.dir==="col"?" col":"");
+  const a=_buildNode(node.a),b=_buildNode(node.b);
+  a.style.flex="0 0 "+((node.ratio||.5)*100)+"%";b.style.flex="1 1 0";
+  const g=document.createElement("div");
+  g.className="term-gutter "+node.dir;
+  _gutterDrag(g,box,node,a);
+  box.append(a,g,b);return box;
 }
-$("#termReset")&&($("#termReset").onclick=()=>openTerminal(true));
+function _gutterDrag(g,box,node,aEl){
+  g.addEventListener("pointerdown",e=>{
+    e.preventDefault();g.setPointerCapture(e.pointerId);
+    const move=ev=>{
+      const r=box.getBoundingClientRect();
+      let frac=node.dir==="row"?(ev.clientX-r.left)/r.width
+        :(ev.clientY-r.top)/r.height;
+      frac=Math.max(.1,Math.min(.9,frac));node.ratio=frac;
+      aEl.style.flex="0 0 "+(frac*100)+"%";requestAnimationFrame(_fitAll);
+    };
+    const up=()=>{g.removeEventListener("pointermove",move);
+      g.removeEventListener("pointerup",up);_fitAll();};
+    g.addEventListener("pointermove",move);g.addEventListener("pointerup",up);
+  });
+}
+function renderStage(){
+  const t=curTab();const stage=$("#termStage");stage.innerHTML="";
+  if(!t)return;
+  _leaves(t.layout).forEach(p=>p.el.remove());
+  stage.appendChild(_buildNode(t.layout));
+  setTimeout(()=>{_fitAll();if(t.active)setActivePane(t.active);},20);
+}
+function renderTabs(){
+  const box=$("#termTabs");if(!box)return;box.innerHTML="";
+  TERMTABS.forEach((t,i)=>{
+    const el=document.createElement("div");
+    el.className="term-tab"+(t.id===TERM_ACTIVE?" on":"");
+    el.innerHTML=`<span class="tname">${esc(t.title||("Session "+(i+1)))}</span>`+
+      `<span class="tx">✕</span>`;
+    el.querySelector(".tname").onclick=()=>activateTab(t.id);
+    el.querySelector(".tx").onclick=e=>{e.stopPropagation();closeTab(t.id);};
+    box.appendChild(el);
+  });
+}
+function setActivePane(p){
+  const t=curTab();if(!t)return;t.active=p;
+  _leaves(t.layout).forEach(x=>x.el.classList.toggle("active",x===p));
+  t.title=p.name;renderTabs();
+  try{p.term.focus();}catch(e){}
+}
+function newTab(){
+  const p=makePane();
+  const t={id:++_paneSeq,layout:{leaf:true,pane:p},active:p,title:"shell"};
+  TERMTABS.push(t);TERM_ACTIVE=t.id;renderTabs();renderStage();
+}
+function activateTab(id){TERM_ACTIVE=id;renderTabs();renderStage();}
+function closeTab(id){
+  const t=TERMTABS.find(x=>x.id===id);if(!t)return;
+  _leaves(t.layout).forEach(disposePane);
+  const i=TERMTABS.indexOf(t);TERMTABS.splice(i,1);
+  if(TERM_ACTIVE===id)TERM_ACTIVE=(TERMTABS[i]||TERMTABS[i-1]||{}).id||null;
+  if(!TERMTABS.length)newTab();else{renderTabs();renderStage();}
+}
+function splitActive(dir){
+  const t=curTab();if(!t||!t.active)return;
+  const np=makePane();
+  const repl={leaf:false,dir,ratio:.5,
+    a:{leaf:true,pane:t.active},b:{leaf:true,pane:np}};
+  t.layout=_replaceLeaf(t.layout,t.active,repl);
+  renderStage();setActivePane(np);
+}
+function closePane(){
+  const t=curTab();if(!t||!t.active)return;
+  const dead=t.active;t.layout=_removeLeaf(t.layout,dead);
+  disposePane(dead);
+  if(!t.layout){closeTab(t.id);return;}
+  t.active=_leaves(t.layout)[0];renderStage();setActivePane(t.active);
+}
+function fontZoom(d){
+  const t=curTab();if(!t||!t.active)return;
+  TERM_FONT=Math.max(8,Math.min(28,(t.active.term.options.fontSize||13)+d));
+  t.active.term.options.fontSize=TERM_FONT;_paneFit(t.active);
+}
+function toggleFull(){
+  const card=$("#termCard");
+  if(document.fullscreenElement){document.exitFullscreen();return;}
+  if(card.requestFullscreen)card.requestFullscreen().catch(()=>card.classList.toggle("fs"));
+  else card.classList.toggle("fs");
+  setTimeout(_fitAll,60);
+}
+document.addEventListener("fullscreenchange",()=>setTimeout(_fitAll,60));
+function openTerminal(){
+  if(!_termInit){
+    _termInit=true;
+    $("#termNewTab").onclick=()=>newTab();
+    $("#termSplitR").onclick=()=>splitActive("row");
+    $("#termSplitD").onclick=()=>splitActive("col");
+    $("#termFontUp").onclick=()=>fontZoom(1);
+    $("#termFontDn").onclick=()=>fontZoom(-1);
+    $("#termClose").onclick=()=>closePane();
+    $("#termFull").onclick=()=>toggleFull();
+    newTab();
+  }else{renderStage();}
+}
 
 /* ---- scheduled tasks: crontab + systemd timers ---- */
 let schedLoaded=false;
