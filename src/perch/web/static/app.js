@@ -1232,6 +1232,19 @@ $("#simpleTog")&&($("#simpleTog").onclick=()=>{
 });
 applySimple();
 
+/* ---- reduce effects: strip blur/gradient/glow/animation for weak GPUs ---- */
+function applyReduceFx(){
+  const on=localStorage.perchReduceFx==="1";
+  document.documentElement.classList.toggle("reduce-fx",on);
+  const t=$("#fxTog");if(t)t.textContent=on?"🟢 On":"⚪ Off";
+}
+$("#fxTog")&&($("#fxTog").onclick=()=>{
+  localStorage.perchReduceFx=localStorage.perchReduceFx==="1"?"0":"1";
+  applyReduceFx();
+  toast(localStorage.perchReduceFx==="1"?"reduced effects on":"full effects on");
+});
+applyReduceFx();
+
 let CAPS=null;
 async function loadCaps(){
   try{CAPS=await api("/api/caps");applyCaps();

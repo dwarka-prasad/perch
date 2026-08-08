@@ -1,7 +1,58 @@
 # Changelog
 
-## Unreleased
+## 1.1.0
 
+A robustness + capability release: hardened internals, distro-agnostic package
+management, several new tools for both developers and non-technical users, and
+a refreshed glass UI.
+
+### New tabs & features
+- **Web terminal** — a real login shell in the browser (a proper pty over a
+  websocket, not a command box), under Developer.
+- **Database browser** — inspect SQLite files and PostgreSQL (host `psql` or a
+  running container); read-only by default with opt-in writes.
+- **Health scorecard** — the Overview now shows a score out of 100 built from
+  disk, updates, failed services, memory, temperature and battery, each finding
+  in plain language with a one-click fix.
+- **Backup helper** — rsync chosen folders to another drive on demand or on a
+  daily/weekly schedule (Storage tab), plus an optional **weekly auto tidy-up**
+  (Clean up tab).
+- **Scheduled-tasks manager** — edit your crontab and enable/disable systemd
+  timers (Tools tab).
+- **SSH key manager** — list keys with fingerprints, copy public keys, generate
+  ed25519 keys (Runtimes tab).
+- **Project launcher** — run a repo's own npm/yarn/pnpm scripts or Make targets
+  as live jobs, from the Git tab.
+- **GNOME Tweaks panel** — GTK/icon/cursor themes, fonts with antialiasing &
+  hinting, titlebar buttons, clock format, animations, workspaces, and pointer
+  speed (Settings).
+- **Simple mode** — one toggle hides every developer tab for a
+  monitoring-and-settings dashboard aimed at non-technical users.
+
+### Cross-distro & desktop
+- Package management now works across **apt / dnf / pacman / zypper**
+  (auto-detected) plus **snap** and **flatpak** when present.
+- `/api/caps` reports the platform (native PM, snap, flatpak, GNOME, battery,
+  Wayland) and the UI hides settings/panels that don't apply.
+- The `.deb` ships a **polkit policy** so package actions show one branded,
+  session-cached password prompt.
+
+### Robustness & security
+- The URL token is exchanged for an **`HttpOnly`, `SameSite=Strict` cookie** on
+  first visit and the URL is cleaned; repeated bad tokens are locked out.
+- Every subprocess call has a **default timeout** so no request can hang.
+- Config files are written **atomically**; a new unauthenticated `/api/health`
+  endpoint and systemd `Type=notify` + watchdog keep the service alive.
+- A **test suite** (unit + HTTP smoke) runs in CI on Python 3.8 and 3.12, and
+  `pip install .` now builds a real package (declarative `setup.cfg`).
+
+### UI
+- **Glass / vibrant refresh** — translucent blurred surfaces over an
+  accent-tinted gradient backdrop, glowing accent active states, hover lifts,
+  focus rings; light + dark. A **Reduce effects** toggle (Settings) turns off
+  blur, the gradient, glows and animations for low-powered machines.
+
+### Earlier in this line
 - **Outbound alert channels** — when a Monitor rule (or a log watcher) fires,
   Perch can notify **ntfy / Slack / Discord / a generic webhook** in addition
   to the desktop, so alerts reach you when you're away from the machine.

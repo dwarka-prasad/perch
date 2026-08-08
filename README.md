@@ -107,6 +107,9 @@ step, no cloud.
   interface/monospace/document fonts with antialiasing & hinting, titlebar
   buttons, clock format, animations, hot corner, workspaces, and mouse /
   touchpad pointer speed.
+- **Dashboard theme** — accent colour, animated backgrounds, a **Simple mode**
+  toggle (hide developer tabs), and a **Reduce effects** toggle that turns off
+  blur, the gradient backdrop, glows and animations for low-powered machines.
 - **Packages** — search, install, remove and upgrade across your native
   package manager (**apt, dnf, pacman or zypper**, auto-detected) plus **snap**
   and **flatpak** when present. A system password dialog (`pkexec`) appears for
@@ -134,8 +137,8 @@ dashboard aimed at non-technical users.
 
 ```bash
 git clone https://github.com/dwarka-prasad/perch && cd perch
-make deb                                  # builds dist/perch_1.0.0_all.deb
-sudo apt install ./dist/perch_1.0.0_all.deb
+make deb                                  # builds dist/perch_1.1.0_all.deb
+sudo apt install ./dist/perch_1.1.0_all.deb
 ```
 
 Then launch **Perch** from your app menu, or:
