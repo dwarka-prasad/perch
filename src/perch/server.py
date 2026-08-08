@@ -1199,6 +1199,90 @@ def health_report():
     return {"text": llm_oneshot("", prompt)}
 
 
+def health_score():
+    """Deterministic plain-language scorecard with one-click fixes.
+
+    Severities: crit (-20), warn (-10), info (-3). Actions the UI knows:
+    upgrade (job), clean / updates / logs / dev (open that tab).
+    """
+    finds = []
+
+    def add(sev, title, detail, action=None):
+        finds.append({"sev": sev, "title": title, "detail": detail,
+                      "action": action})
+
+    for d in disks():
+        if d["percent"] >= 92:
+            add("crit", f"Disk almost full: {d['mount']}",
+                f"{d['percent']:.0f}% used, "
+                f"{d['free'] // 2**30} GB left. Things may stop working.",
+                "clean")
+        elif d["percent"] >= 85:
+            add("warn", f"Disk getting full: {d['mount']}",
+                f"{d['percent']:.0f}% used, {d['free'] // 2**30} GB left.",
+                "clean")
+    try:
+        u = pkg_updates()
+        if u["security"]:
+            add("warn", f"{u['security']} security updates waiting",
+                "Security fixes should be installed promptly.", "upgrade")
+        elif u["count"]:
+            add("info", f"{u['count']} software updates available",
+                "Not urgent, but staying current avoids surprises.",
+                "updates")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        fs = services().get("failed_system", [])
+        if fs:
+            add("warn", f"{len(fs)} system service(s) failed",
+                ", ".join(s["name"] for s in fs[:5]), "dev")
+    except Exception:  # noqa: BLE001
+        pass
+    if os.path.exists("/var/run/reboot-required"):
+        add("info", "Restart pending",
+            "An update needs a reboot to fully apply.")
+    vm = psutil.virtual_memory()
+    sw = psutil.swap_memory()
+    if vm.percent >= 90 and sw.percent >= 50:
+        add("warn", "Memory pressure is high",
+            f"RAM {vm.percent:.0f}% and swap {sw.percent:.0f}% used — the "
+            "machine may feel slow. Close heavy apps or check Processes.")
+    try:
+        temps = psutil.sensors_temperatures()
+        top = max((t.current for ts in temps.values() for t in ts),
+                  default=0)
+        if top >= 85:
+            add("warn", f"Running hot: {top:.0f}°C",
+                "Sustained high temperature. Check vents and heavy "
+                "processes.")
+    except (OSError, AttributeError):
+        pass
+    try:
+        b = psutil.sensors_battery()
+        full, design = 0, 0
+        for supply in glob.glob("/sys/class/power_supply/BAT*"):
+            try:
+                with open(supply + "/energy_full") as f:
+                    full = int(f.read())
+                with open(supply + "/energy_full_design") as f:
+                    design = int(f.read())
+            except OSError:
+                pass
+        if b and design and full / design < 0.7:
+            add("info", "Battery has aged",
+                f"Holds {full * 100 // design}% of its original capacity. "
+                "Expect shorter battery life.")
+    except (OSError, RuntimeError):
+        pass
+    penalty = {"crit": 20, "warn": 10, "info": 3}
+    score = max(0, 100 - sum(penalty[f["sev"]] for f in finds))
+    verdict = ("Excellent" if score >= 90 else
+               "Good" if score >= 75 else
+               "Needs attention" if score >= 50 else "Poor")
+    return {"score": score, "verdict": verdict, "findings": finds}
+
+
 # --------------------------------------------------------- llm providers -----
 # Perch ships no HTTP SDK, so provider calls use urllib against each provider's
 # documented wire format. Anthropic: POST /v1/messages, x-api-key +
@@ -3137,6 +3221,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(logwatch_state())
             if route == "/api/caps":
                 return self._json(capabilities())
+            if route == "/api/healthscore":
+                return self._json(health_score())
             if route == "/api/updates":
                 return self._json(pkg_updates(qs.get("force", ["0"])[0] == "1"))
             if route == "/api/procinfo":

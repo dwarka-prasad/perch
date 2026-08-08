@@ -824,9 +824,39 @@ async function loadCritLogs(){
   }catch(e){$("#critLogs").innerHTML='<span class="muted">log read unavailable</span>';}
 }
 $("#critMore")&&($("#critMore").onclick=()=>goTab("logs"));
+/* ---- overview: health scorecard with one-click fixes ---- */
+async function loadHealth(){
+  try{
+    const h=await api("/api/healthscore");
+    const color=h.score>=90?"var(--goodtext)":h.score>=75?"var(--s1)":
+      h.score>=50?"var(--s7,#e6a400)":"var(--crit)";
+    $("#hsVerdict").innerHTML=`— <b style="color:${color}">${h.score}/100 · ${esc(h.verdict)}</b>`;
+    const icon={crit:"🔴",warn:"🟠",info:"🔵"};
+    const act={upgrade:["Install updates","upgrade"],
+      clean:["Free up space","clean"],updates:["See updates","updates"],
+      logs:["Open logs","logs"],dev:["See services","dev"]};
+    $("#hsBody").innerHTML=h.findings.length?h.findings.map((f,i)=>{
+      const a=f.action&&act[f.action];
+      return `<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid var(--grid)">
+        <span>${icon[f.sev]||"ℹ️"}</span>
+        <div style="flex:1"><b>${esc(f.title)}</b>
+          <span class="muted">${esc(f.detail)}</span></div>
+        ${a?`<button class="btn small" data-hs="${f.action}">${a[0]}</button>`:""}</div>`;
+    }).join(""):'<span style="color:var(--goodtext)">everything looks healthy 🎉</span>';
+    document.querySelectorAll("[data-hs]").forEach(b=>b.onclick=()=>{
+      const k=b.dataset.hs;
+      if(k==="upgrade"){
+        if(!confirm("Install all pending updates now?\nA password dialog may appear."))return;
+        runJob(api("/api/upgradeall",{method:"POST",body:JSON.stringify({mgr:"native"})}));
+      }else goTab(k);
+    });
+  }catch(e){$("#hsBody").textContent="health check unavailable";}
+}
+$("#hsRefresh")&&($("#hsRefresh").onclick=loadHealth);
 loadOverview();setInterval(loadOverview,2500);
 loadHW();setInterval(loadHW,60000);
 loadCritLogs();setInterval(loadCritLogs,60000);
+loadHealth();setInterval(loadHealth,300000);
 
 /* ---- storage ---- */
 let showSmall=false;
