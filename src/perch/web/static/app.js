@@ -364,6 +364,7 @@ $("#pkgQ").onkeydown=e=>{if(e.key==="Enter")pkgSearch();};
 
 /* ---- settings ---- */
 async function loadSettings(){
+  loadLLM();
   try{
     const s=await api("/api/settings");
     const slider=(id,label,val,min,max,unit,key)=>`
@@ -627,8 +628,68 @@ async function loadRuntimes(){
         +'<div class="muted" style="font-size:12px;margin-top:6px">switch with <code>nvm use &lt;version&gt;</code> in a terminal (per-shell)</div>'
         :'<span class="muted">nvm present, no versions installed</span>')
       :'<span class="muted">single system Node.js — install <b>nvm</b> to manage multiple versions</span>';
+    const alts=r.alternatives||[];
+    $("#rtAlts").innerHTML=alts.length?`<table><tbody>`+alts.map((a,i)=>`
+      <tr><td style="width:180px"><b>${esc(a.name)}</b>${a.auto?' <span class="muted" style="font-size:11px">(auto)</span>':""}</td>
+      <td><select class="btn altsel" data-name="${esc(a.name)}" data-i="${i}">`+
+      a.options.map(o=>`<option value="${esc(o)}" ${o===a.current?"selected":""}>${esc(o)}</option>`).join("")+
+      `</select></td>
+      <td class="num"><button class="btn small" data-alt="${i}">Switch</button></td></tr>`).join("")+
+      `</tbody></table>`:'<span class="muted">no multi-candidate alternatives</span>';
+    document.querySelectorAll("[data-alt]").forEach(b=>b.onclick=()=>{
+      const sel=document.querySelector(`.altsel[data-i="${b.dataset.alt}"]`);
+      if(sel.value===alts[+b.dataset.alt].current){toast("already the active version");return;}
+      runJob(api("/api/setalternative",{method:"POST",
+        body:JSON.stringify({name:sel.dataset.name,path:sel.value})}));
+    });
   }catch(e){toast(e.message,false);}
 }
+
+/* ---- LLM provider config ---- */
+const LLM_HINTS={"claude-cli":"uses your logged-in Claude Code CLI (no key)",
+  "anthropic":"api.anthropic.com — needs an API key",
+  "openai":"OpenAI or any compatible gateway — key + base URL",
+  "ollama":"local models, no key — great for private/offline summaries"};
+const LLM_MODELS={"claude-cli":"",anthropic:"claude-sonnet-5",
+  openai:"gpt-4o-mini",ollama:"llama3.2"};
+function llmSyncFields(){
+  const p=$("#llmProvider").value;
+  $("#llmHint").textContent=LLM_HINTS[p]||"";
+  document.querySelectorAll(".llm-field").forEach(el=>el.style.display=p==="claude-cli"?"none":"flex");
+  $("#llmKeyRow").style.display=(p==="anthropic"||p==="openai")?"flex":"none";
+  $("#llmUrlRow").style.display=(p==="openai"||p==="ollama"||p==="anthropic")?"flex":"none";
+}
+async function loadLLM(){
+  try{
+    const c=await api("/api/llm");
+    const sel=$("#llmProvider");
+    // hide CLI option if the CLI isn't installed
+    if(!c.cli_available)sel.querySelector('option[value="claude-cli"]').disabled=true;
+    sel.value=c.provider;
+    $("#llmModel").value=c.model||LLM_MODELS[c.provider]||"";
+    $("#llmModel").placeholder=LLM_MODELS[c.provider]||"model id";
+    $("#llmUrl").value=c.base_url||"";
+    $("#llmKeyState").textContent=c.has_key?"✓ key saved":"no key set";
+    $("#llmKey").value="";
+    llmSyncFields();
+  }catch(e){}
+}
+$("#llmProvider")&&($("#llmProvider").onchange=()=>{
+  llmSyncFields();
+  if(!$("#llmModel").value)$("#llmModel").value=LLM_MODELS[$("#llmProvider").value]||"";
+  $("#llmModel").placeholder=LLM_MODELS[$("#llmProvider").value]||"model id";});
+$("#llmSave")&&($("#llmSave").onclick=async()=>{
+  const body={provider:$("#llmProvider").value,model:$("#llmModel").value.trim(),
+    base_url:$("#llmUrl").value.trim()};
+  if($("#llmKey").value.trim())body.api_key=$("#llmKey").value.trim();
+  try{await api("/api/llmconfig",{method:"POST",body:JSON.stringify(body)});
+    $("#llmStatus").textContent="saved ✓";toast("AI provider saved");loadLLM();}
+  catch(e){toast(e.message,false);}});
+$("#llmTest")&&($("#llmTest").onclick=async()=>{
+  $("#llmStatus").textContent="testing…";
+  try{const r=await api("/api/llmtest",{method:"POST",body:"{}"});
+    $("#llmStatus").textContent="✓ "+(r.reply||"ok");}
+  catch(e){$("#llmStatus").textContent="";toast(e.message,false);}});
 
 /* ---- site preview ---- */
 $("#siteGo")&&($("#siteGo").onclick=async()=>{
@@ -1539,20 +1600,23 @@ function aiBubble(cls,text){
   $("#aiChat").scrollTop=$("#aiChat").scrollHeight;
   return div;
 }
-let aiFresh=true;
+let aiFresh=true,aiHistory=[];  // history feeds API providers (CLI uses --resume)
 async function aiAsk(q){
   q=(q||$("#aiIn").value).trim();
   if(!q)return;
   $("#aiIn").value="";
   aiBubble("me",q);
-  const th=aiBubble("bot thinking","Claude is thinking… (can take up to a minute)");
+  const th=aiBubble("bot thinking","Thinking… (can take up to a minute)");
   $("#aiGo").disabled=true;
   try{
     const r=await api("/api/ai",{method:"POST",body:JSON.stringify(
-      {prompt:q,snapshot:$("#aiSnap").checked,reset:aiFresh})});
+      {prompt:q,snapshot:$("#aiSnap").checked,reset:aiFresh,history:aiHistory})});
     aiFresh=false;
+    const text=r.text||"(empty reply)";
+    aiHistory.push({role:"user",content:q},{role:"assistant",content:text});
+    if(aiHistory.length>40)aiHistory=aiHistory.slice(-40);
     th.classList.remove("thinking");
-    th.textContent=r.text||"(empty reply)";
+    th.textContent=text;
   }catch(e){th.classList.remove("thinking");th.textContent="⚠ "+e.message;}
   $("#aiGo").disabled=false;
   $("#aiChat").scrollTop=$("#aiChat").scrollHeight;
@@ -1561,7 +1625,7 @@ $("#aiGo").onclick=()=>aiAsk();
 $("#aiIn").onkeydown=e=>{
   if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();aiAsk();}};
 document.querySelectorAll(".aiq").forEach(b=>b.onclick=()=>aiAsk(b.textContent));
-$("#aiReset").onclick=()=>{aiFresh=true;$("#aiChat").innerHTML="";
+$("#aiReset").onclick=()=>{aiFresh=true;aiHistory=[];$("#aiChat").innerHTML="";
   toast("new conversation started");};
 $("#aiHealth")&&($("#aiHealth").onclick=async()=>{
   aiBubble("me","🩺 Generate a system health report");

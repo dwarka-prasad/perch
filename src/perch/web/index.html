@@ -457,6 +457,34 @@
             <label class="pill"><input type="checkbox" id="ssShuffle" checked> shuffle</label>
             <button class="btn tog" id="ssToggle">⚪ Off</button></div>
         </div></div></div>
+    <div class="panel"><h2>AI provider <span class="muted">— powers the AI tab &amp; health report</span></h2>
+      <div class="row"><span style="width:130px">Provider</span>
+        <select id="llmProvider" class="btn">
+          <option value="claude-cli">Local Claude CLI</option>
+          <option value="anthropic">Anthropic API (key)</option>
+          <option value="openai">OpenAI-compatible (key + URL)</option>
+          <option value="ollama">Ollama (local)</option>
+        </select>
+        <span class="muted" id="llmHint" style="font-size:12px"></span></div>
+      <div class="row llm-field"><span style="width:130px">Model</span>
+        <input type="text" id="llmModel" style="flex:1;min-width:200px" class="mono"></div>
+      <div class="row llm-field" id="llmKeyRow"><span style="width:130px">API key</span>
+        <input type="password" id="llmKey" style="flex:1;min-width:200px" class="mono"
+          placeholder="leave blank to keep existing">
+        <span class="muted" id="llmKeyState" style="font-size:12px"></span></div>
+      <div class="row llm-field" id="llmUrlRow"><span style="width:130px">Base URL</span>
+        <input type="text" id="llmUrl" style="flex:1;min-width:200px" class="mono"
+          placeholder="optional override"></div>
+      <div class="row" style="margin-bottom:0"><span style="width:130px"></span>
+        <button class="btn" id="llmSave">Save</button>
+        <button class="btn small" id="llmTest">Test connection</button>
+        <span class="muted" id="llmStatus" style="font-size:12px"></span></div>
+      <div class="muted" style="font-size:11.5px;margin-top:6px">Keys are stored
+        in <span class="mono">~/.config/perch/llm.json</span> (chmod 600) and never
+        sent back to the browser. Ollama needs no key — good for private, offline
+        summaries. MCP-style tool servers aren't chat endpoints; point the
+        OpenAI-compatible option at any local gateway instead.</div>
+    </div>
     <div class="panel"><h2>Dashboard theme <span class="muted">— this app's look</span></h2>
       <div class="row"><span style="width:130px">Accent color</span>
         <span id="accSwatches"></span>
@@ -477,6 +505,11 @@
       <div id="rtRust" class="muted">—</div></div>
     <div class="panel"><h2>Node.js versions</h2>
       <div id="rtNode" class="muted">—</div></div>
+    <div class="panel"><h2>System default versions <span class="muted">— update-alternatives (java, python, editor, browser, …)</span></h2>
+      <div id="rtAlts" class="muted">—</div>
+      <div class="muted" style="font-size:12px;margin-top:8px">Switching the
+        active version needs admin rights — a password dialog appears, output
+        shows in the job box.</div></div>
   </section>
 
   <section id="tab-users">

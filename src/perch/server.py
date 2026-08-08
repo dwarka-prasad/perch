@@ -1141,7 +1141,132 @@ def health_report():
         "verdict, then a prioritized list (critical → nice-to-have) of concrete "
         "issues with the exact command to fix each. Skip anything that looks "
         "healthy. Be specific and brief.\n\n" + "\n".join(ctx))
-    return ask_ai(prompt, include_snapshot=False, reset=True)
+    return {"text": llm_oneshot("", prompt)}
+
+
+# --------------------------------------------------------- llm providers -----
+# Perch ships no HTTP SDK, so provider calls use urllib against each provider's
+# documented wire format. Anthropic: POST /v1/messages, x-api-key +
+# anthropic-version: 2023-06-01, response.content is a list of blocks (text is
+# on type=="text" blocks). OpenAI-compatible: POST {base}/chat/completions,
+# Bearer auth, choices[0].message.content. Ollama: POST {base}/api/chat.
+
+LLM_DEFAULTS = {"provider": "claude-cli", "model": "", "base_url": "",
+                "api_key": ""}
+
+
+def _llm_file():
+    return os.path.join(CFG_DIR, "llm.json")
+
+
+def llm_cfg():
+    cfg = dict(LLM_DEFAULTS)
+    try:
+        with open(_llm_file()) as f:
+            cfg.update(json.load(f))
+    except (OSError, ValueError):
+        pass
+    return cfg
+
+
+def llm_public():
+    c = llm_cfg()
+    return {"provider": c["provider"], "model": c["model"],
+            "base_url": c["base_url"], "has_key": bool(c["api_key"]),
+            "cli_available": os.path.exists(CLAUDE_BIN),
+            "providers": ["claude-cli", "anthropic", "openai", "ollama"]}
+
+
+def llm_save(body):
+    os.makedirs(CFG_DIR, exist_ok=True)
+    cfg = llm_cfg()
+    for k in ("provider", "model", "base_url"):
+        if k in body:
+            cfg[k] = str(body[k]).strip()
+    # keep existing key unless a new non-empty one is supplied
+    if body.get("api_key"):
+        cfg["api_key"] = str(body["api_key"]).strip()
+    if body.get("clear_key"):
+        cfg["api_key"] = ""
+    with open(_llm_file(), "w") as f:
+        json.dump(cfg, f)
+    os.chmod(_llm_file(), 0o600)
+    return llm_public()
+
+
+def _http_post_json(url, headers, payload, timeout=240):
+    import urllib.request as ur
+    data = json.dumps(payload).encode()
+    req = ur.Request(url, data=data, method="POST",
+                     headers={"Content-Type": "application/json", **headers})
+    try:
+        with ur.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:300]
+        raise ValueError(f"provider HTTP {e.code}: {detail}")
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"provider request failed: {e}")
+
+
+def _provider_chat(cfg, system, messages, max_tokens=1024):
+    """messages: [{'role','content'}]. Returns the assistant text."""
+    p = cfg["provider"]
+    if p == "anthropic":
+        if not cfg["api_key"]:
+            raise ValueError("no Anthropic API key configured")
+        base = cfg["base_url"] or "https://api.anthropic.com"
+        payload = {"model": cfg["model"] or "claude-sonnet-5",
+                   "max_tokens": max_tokens, "messages": messages}
+        if system:
+            payload["system"] = system
+        out = _http_post_json(base.rstrip("/") + "/v1/messages",
+                              {"x-api-key": cfg["api_key"],
+                               "anthropic-version": "2023-06-01"}, payload)
+        return "".join(b.get("text", "") for b in out.get("content", [])
+                       if b.get("type") == "text").strip()
+    if p == "openai":
+        base = cfg["base_url"] or "https://api.openai.com/v1"
+        msgs = ([{"role": "system", "content": system}] if system else []) \
+            + messages
+        payload = {"model": cfg["model"] or "gpt-4o-mini", "messages": msgs,
+                   "max_tokens": max_tokens}
+        hdr = {"Authorization": f"Bearer {cfg['api_key']}"} \
+            if cfg["api_key"] else {}
+        out = _http_post_json(base.rstrip("/") + "/chat/completions", hdr,
+                              payload)
+        return out["choices"][0]["message"]["content"].strip()
+    if p == "ollama":
+        base = cfg["base_url"] or "http://localhost:11434"
+        msgs = ([{"role": "system", "content": system}] if system else []) \
+            + messages
+        out = _http_post_json(base.rstrip("/") + "/api/chat",
+                              {}, {"model": cfg["model"] or "llama3.2",
+                                   "messages": msgs, "stream": False})
+        return out.get("message", {}).get("content", "").strip()
+    raise ValueError(f"provider '{p}' has no HTTP path")
+
+
+def llm_oneshot(system, user_text, max_tokens=1500):
+    """Single-turn completion via the configured provider (used by health)."""
+    cfg = llm_cfg()
+    if cfg["provider"] == "claude-cli":
+        return ask_ai((system + "\n\n" + user_text) if system else user_text,
+                      include_snapshot=False, reset=True)["text"]
+    return _provider_chat(cfg, system,
+                          [{"role": "user", "content": user_text}], max_tokens)
+
+
+def llm_test():
+    cfg = llm_cfg()
+    if cfg["provider"] == "claude-cli":
+        if not os.path.exists(CLAUDE_BIN):
+            raise ValueError("claude CLI not found")
+        return {"ok": True, "reply": "claude CLI present"}
+    reply = _provider_chat(cfg, "You are a connectivity test.",
+                           [{"role": "user",
+                             "content": "Reply with exactly: OK"}], 20)
+    return {"ok": True, "reply": reply[:200]}
 
 
 # ------------------------------------------------------ http collections -----
@@ -2193,7 +2318,30 @@ def runtimes():
         node_versions = sorted(os.listdir(nvm), reverse=True)
     return {"tools": out, "rust_toolchains": rust_tc,
             "rust_active": rust_active, "node_versions": node_versions,
-            "has_nvm": os.path.exists(os.path.join(HOME, ".nvm/nvm.sh"))}
+            "has_nvm": os.path.exists(os.path.join(HOME, ".nvm/nvm.sh")),
+            "alternatives": alternatives()}
+
+
+def alternatives():
+    """Debian update-alternatives groups that have more than one candidate —
+    the general 'switch the active version of a tool' mechanism (java, python,
+    editor, browsers, …). Switching needs root, so it runs via pkexec."""
+    groups = []
+    r = subprocess.run(["update-alternatives", "--get-selections"],
+                       capture_output=True, text=True)
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        name, mode, current = parts[0], parts[1], parts[2]
+        rl = subprocess.run(["update-alternatives", "--list", name],
+                            capture_output=True, text=True)
+        opts = [o for o in rl.stdout.splitlines() if o]
+        if len(opts) > 1:
+            groups.append({"name": name, "current": current,
+                           "auto": mode == "auto", "options": opts})
+    groups.sort(key=lambda g: g["name"])
+    return groups
 
 
 def set_runtime(kind, value):
@@ -2442,6 +2590,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"apps": available_apps()})
             if route == "/api/runtimes":
                 return self._json(runtimes())
+            if route == "/api/llm":
+                return self._json(llm_public())
             if route == "/api/office":
                 return self._json(read_office(qs.get("path", [""])[0]))
             if route == "/api/shot":
@@ -2509,10 +2659,34 @@ class Handler(BaseHTTPRequestHandler):
                 p = save_png(body["path"], body["data"])
                 return self._json({"ok": True, "path": p})
             if route == "/api/ai":
-                return self._json(ask_ai(body.get("prompt", ""),
-                                         bool(body.get("snapshot", True)),
-                                         bool(body.get("reset")),
-                                         body.get("extra", "")))
+                cfg = llm_cfg()
+                prompt = body.get("prompt", "")
+                if cfg["provider"] == "claude-cli":
+                    return self._json(ask_ai(prompt,
+                                             bool(body.get("snapshot", True)),
+                                             bool(body.get("reset")),
+                                             body.get("extra", "")))
+                system = ("You are the assistant inside a local Linux system "
+                          "dashboard. Current system snapshot:\n" + ai_snapshot()
+                          ) if body.get("snapshot", True) else ""
+                history = body.get("history") or []
+                msgs = [{"role": m["role"], "content": m["content"]}
+                        for m in history if m.get("role") in ("user", "assistant")]
+                msgs.append({"role": "user", "content": prompt})
+                text = _provider_chat(cfg, system, msgs, 2048)
+                return self._json({"text": text, "provider": cfg["provider"]})
+            if route == "/api/llmconfig":
+                return self._json(llm_save(body))
+            if route == "/api/llmtest":
+                return self._json(llm_test())
+            if route == "/api/setalternative":
+                name, path = body["name"], body["path"]
+                if not re.fullmatch(r"[\w.@+-]+", name) or not os.path.exists(path):
+                    return self._err("bad alternative")
+                return self._json(start_job(
+                    ["update-alternatives", "--set", name, path],
+                    f"Switch {name} → {os.path.basename(path)}",
+                    privileged=True))
             if route == "/api/monitor":
                 return self._json({"ok": True, "cfg": mon_save(body)})
             if route == "/api/testnotify":
