@@ -8,7 +8,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY pyproject.toml README.md ./
+COPY pyproject.toml setup.cfg setup.py README.md ./
 COPY src ./src
 RUN pip install --no-cache-dir ".[office]"
 
