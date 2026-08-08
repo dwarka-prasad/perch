@@ -4,16 +4,23 @@ Serves the web UI (perch/web) and a JSON API on 127.0.0.1. Run via
 ``python -m perch`` or the ``perch`` console script.
 """
 
+import base64
+import fcntl
 import glob
+import hashlib
 import json
 import os
+import pty as _pty
 import pwd
 import re
 import secrets
+import select
 import shutil
 import socket
+import struct
 import subprocess
 import sys
+import termios
 import threading
 import time
 import urllib.error
@@ -3209,6 +3216,112 @@ def save_png(path, data_b64):
 # ------------------------------------------------------------------ server ---
 
 
+# ------------------------------------------------------ websocket terminal ---
+# Minimal RFC 6455 server (no fragmentation/extensions — plenty for a
+# terminal) feeding a pty running the user's shell. One pty per connection.
+
+_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def _ws_accept(key):
+    return base64.b64encode(
+        hashlib.sha1((key + _WS_GUID).encode()).digest()).decode()
+
+
+def _ws_send(sock, data, opcode=0x1):
+    payload = data.encode() if isinstance(data, str) else data
+    head = bytes([0x80 | opcode])
+    n = len(payload)
+    if n < 126:
+        head += bytes([n])
+    elif n < 65536:
+        head += bytes([126]) + struct.pack(">H", n)
+    else:
+        head += bytes([127]) + struct.pack(">Q", n)
+    sock.sendall(head + payload)
+
+
+def _ws_recv(sock):
+    """Read one client frame → (opcode, payload) or (None, b'') on EOF."""
+    def read(n):
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise ConnectionError
+            buf += chunk
+        return buf
+    try:
+        b1, b2 = read(2)
+    except (ConnectionError, OSError):
+        return None, b""
+    opcode = b1 & 0x0F
+    masked = b2 & 0x80
+    n = b2 & 0x7F
+    if n == 126:
+        n = struct.unpack(">H", read(2))[0]
+    elif n == 127:
+        n = struct.unpack(">Q", read(8))[0]
+    if n > 2 ** 20:
+        return None, b""
+    mask = read(4) if masked else b"\0\0\0\0"
+    data = bytes(c ^ mask[i % 4] for i, c in enumerate(read(n)))
+    return opcode, data
+
+
+def _pty_session(sock):
+    """Bridge a websocket to a fresh login shell in a pty until either side
+    closes. Client protocol: 'i<data>' keyboard input, 'r{cols,rows}' resize."""
+    shell = os.environ.get("SHELL") or pwd.getpwuid(os.getuid()).pw_shell \
+        or "/bin/bash"
+    pid, fd = _pty.fork()
+    if pid == 0:  # child
+        os.chdir(HOME)
+        env = {**os.environ, "TERM": "xterm-256color"}
+        os.execve(shell, [shell, "-l"], env)
+    try:
+        while True:
+            r, _, _ = select.select([fd, sock], [], [], 30)
+            if fd in r:
+                try:
+                    out = os.read(fd, 32768)
+                except OSError:
+                    break
+                if not out:
+                    break
+                _ws_send(sock, out, opcode=0x2)
+            if sock in r:
+                op, data = _ws_recv(sock)
+                if op is None or op == 0x8:
+                    break
+                if op == 0x9:  # ping → pong
+                    _ws_send(sock, data, opcode=0xA)
+                    continue
+                if not data:
+                    continue
+                kind, rest = data[:1], data[1:]
+                if kind == b"i":
+                    os.write(fd, rest)
+                elif kind == b"r":
+                    try:
+                        d = json.loads(rest)
+                        winsz = struct.pack("HHHH", int(d["rows"]),
+                                            int(d["cols"]), 0, 0)
+                        fcntl.ioctl(fd, termios.TIOCSWINSZ, winsz)
+                    except (ValueError, KeyError, OSError):
+                        pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.kill(pid, 15)
+            os.waitpid(pid, os.WNOHANG)
+        except OSError:
+            pass
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -3313,6 +3426,22 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self._authed(qs):
             return self._err("bad token", 403)
+        if route == "/ws/term":
+            key = self.headers.get("Sec-WebSocket-Key")
+            if (self.headers.get("Upgrade", "").lower() != "websocket"
+                    or not key):
+                return self._err("websocket endpoint", 400)
+            self.send_response(101, "Switching Protocols")
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", _ws_accept(key))
+            self.end_headers()
+            self.close_connection = True
+            try:
+                _pty_session(self.connection)
+            except (OSError, ConnectionError):
+                pass
+            return
         try:
             if route == "/api/overview":
                 return self._json(overview())

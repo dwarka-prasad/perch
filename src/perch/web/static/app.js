@@ -45,7 +45,7 @@ document.querySelectorAll("nav button[data-tab]").forEach(b=>b.onclick=()=>{
     logs:()=>{if(!$("#logView").innerHTML)loadLogs(false);},
     ai:()=>$("#aiIn").focus(),monitor:loadMonitor,
     updates:loadUpdates,packages:()=>$("#pkgQ").focus(),
-    settings:loadSettings,runtimes:loadRuntimes,
+    settings:loadSettings,runtimes:loadRuntimes,term:openTerminal,
     git:loadGit,api:loadApiClient}[b.dataset.tab]||(()=>{}))();
 });
 function goTab(name){
@@ -1082,8 +1082,37 @@ $("#codeHere").onclick=async()=>{
   try{const r=await api("/api/editor",{method:"POST",body:JSON.stringify({path:fPath})});
     toast("opened in "+r.editor);}catch(e){toast(e.message,false);}};
 /* ---- capabilities: hide buttons for apps this machine doesn't have ---- */
+/* ---- web terminal (xterm.js over a websocket to a pty) ---- */
+let TERM=null,TERM_WS=null,TERM_FIT=null;
+function openTerminal(reset){
+  if(reset&&TERM_WS){try{TERM_WS.close();}catch(e){}TERM_WS=null;}
+  if(!TERM){
+    TERM=new Terminal({fontSize:13,fontFamily:"ui-monospace,Menlo,monospace",
+      cursorBlink:true,theme:{background:"#000000"}});
+    TERM_FIT=new FitAddon.FitAddon();TERM.loadAddon(TERM_FIT);
+    TERM.open($("#termHost"));
+    TERM.onData(d=>TERM_WS&&TERM_WS.readyState===1&&TERM_WS.send("i"+d));
+    new ResizeObserver(()=>{try{TERM_FIT.fit();sendResize();}catch(e){}})
+      .observe($("#termHost"));
+  }
+  setTimeout(()=>{try{TERM_FIT.fit();}catch(e){}},30);
+  if(TERM_WS&&TERM_WS.readyState<=1)return;
+  const proto=location.protocol==="https:"?"wss:":"ws:";
+  TERM_WS=new WebSocket(`${proto}//${location.host}/ws/term`);
+  TERM_WS.binaryType="arraybuffer";
+  TERM_WS.onopen=()=>{if(reset)TERM.reset();sendResize();TERM.focus();};
+  TERM_WS.onmessage=e=>TERM.write(typeof e.data==="string"?e.data:
+    new Uint8Array(e.data));
+  TERM_WS.onclose=()=>TERM.write("\r\n\x1b[90m[session ended — “New session” to reconnect]\x1b[0m\r\n");
+}
+function sendResize(){
+  if(TERM&&TERM_WS&&TERM_WS.readyState===1)
+    TERM_WS.send("r"+JSON.stringify({cols:TERM.cols,rows:TERM.rows}));
+}
+$("#termReset")&&($("#termReset").onclick=()=>openTerminal(true));
+
 /* ---- simple mode: hide developer tooling for non-developer users ---- */
-const SIMPLE_TABS=["net","dev","git","api","runtimes","tools","kernel"];
+const SIMPLE_TABS=["term","net","dev","git","api","runtimes","tools","kernel"];
 function applySimple(){
   const on=localStorage.perchSimple==="1";
   SIMPLE_TABS.forEach(t=>{

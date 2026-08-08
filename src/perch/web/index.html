@@ -3,7 +3,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Perch</title>
-<link rel="stylesheet" href="/static/styles.css"></head><body>
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/vendor/xterm.css"></head><body>
 <canvas id="bgCanvas"></canvas>
 <div class="layout">
 <nav>
@@ -26,6 +27,7 @@
   <button data-tab="search">🔍 Search</button>
   <button data-tab="clean">🧹 Clean up</button>
   <div class="ngroup" id="ngDev">Developer</div>
+  <button data-tab="term">🖥️ Terminal</button>
   <button data-tab="net">🌐 Network</button>
   <button data-tab="dev">🧰 Dev</button>
   <button data-tab="git">🔀 Git</button>
@@ -223,6 +225,17 @@
       <tbody><tr><td colspan=5 class="muted" style="padding:14px">Type at least
       2 characters. Matches on the file name first, then on the full path.
       Prefix matches rank highest.</td></tr></tbody></table></div>
+  </section>
+
+  <section id="tab-term">
+    <div class="panel" style="padding:10px">
+      <div class="row" style="margin-bottom:8px">
+        <b>Terminal</b>
+        <span class="muted" style="font-size:12px">a real shell in your home directory — runs as you</span>
+        <span class="spacer" style="flex:1"></span>
+        <button class="btn small" id="termReset">↻ New session</button></div>
+      <div id="termHost" style="height:70vh;background:#000;border-radius:8px;padding:6px"></div>
+    </div>
   </section>
 
   <section id="tab-net">
@@ -672,4 +685,6 @@
 </div>
 <div class="toast" id="toast"></div>
 <script>const TOKEN="{{TOKEN}}";const HOME_DIR="{{HOME}}";</script>
+<script src="/static/vendor/xterm.js"></script>
+<script src="/static/vendor/xterm-fit.js"></script>
 <script src="/static/app.js"></script></body></html>
