@@ -1267,8 +1267,82 @@ async function loadMonitor(){
       <td>${esc(e.msg)}</td></tr>`).join("")
       :`<tr><td class="muted" style="padding:12px">no alerts fired yet 🎉</td></tr>`;
     drawMonChart(m.history);
+    loadChannels();loadLogwatch();
   }catch(e){toast(e.message,false);}
 }
+/* ---- alert channels ---- */
+let ntCfg={desktop:true,channels:[]};
+async function loadChannels(){
+  try{ntCfg=await api("/api/notify");renderChannels();}catch(e){}
+}
+function renderChannels(){
+  $("#ntDesktop").checked=ntCfg.desktop!==false;
+  $("#ntChannels").innerHTML=(ntCfg.channels||[]).map((c,i)=>`
+    <div class="row" style="margin-bottom:6px">
+      <select class="btn ntType" data-i="${i}">
+        ${["ntfy","slack","discord","webhook"].map(t=>`<option value="${t}" ${t===c.type?"selected":""}>${t}</option>`).join("")}</select>
+      <input type="text" class="ntUrl" data-i="${i}" value="${esc(c.url||"")}" placeholder="URL" style="flex:1;min-width:220px" class="mono">
+      <label class="pill"><input type="checkbox" class="ntEn" data-i="${i}" ${c.enabled!==false?"checked":""}> on</label>
+      <span class="hint" data-ntdel="${i}" style="color:var(--crit);cursor:pointer">✕</span></div>`).join("")
+    ||'<span class="muted" style="font-size:12px">no channels — desktop only</span>';
+  $("#ntChannels").querySelectorAll("[data-ntdel]").forEach(el=>el.onclick=()=>{
+    ntCfg.channels.splice(+el.dataset.ntdel,1);renderChannels();});
+}
+function collectChannels(){
+  ntCfg.desktop=$("#ntDesktop").checked;
+  const types=[...document.querySelectorAll(".ntType")];
+  const urls=[...document.querySelectorAll(".ntUrl")];
+  const ens=[...document.querySelectorAll(".ntEn")];
+  ntCfg.channels=types.map((t,i)=>({type:t.value,url:urls[i].value.trim(),
+    enabled:ens[i].checked})).filter(c=>c.url);
+}
+$("#ntAdd")&&($("#ntAdd").onclick=()=>{collectChannels();
+  ntCfg.channels.push({type:"ntfy",url:"",enabled:true});renderChannels();});
+$("#ntSave")&&($("#ntSave").onclick=async()=>{collectChannels();
+  try{await api("/api/notifyconfig",{method:"POST",body:JSON.stringify(ntCfg)});
+    $("#ntStat").textContent="saved ✓";toast("channels saved");}catch(e){toast(e.message,false);}});
+$("#ntTest")&&($("#ntTest").onclick=async()=>{collectChannels();
+  await api("/api/notifyconfig",{method:"POST",body:JSON.stringify(ntCfg)});
+  try{const r=await api("/api/testnotify",{method:"POST",body:"{}"});
+    $("#ntStat").textContent=`sent to desktop + ${r.channels} channel(s)`;
+    toast("test sent");}catch(e){toast(e.message,false);}});
+/* ---- log-pattern watchers ---- */
+let lwCfg={enabled:false,rules:[]};
+async function loadLogwatch(){
+  try{lwCfg=await api("/api/logwatch");renderLogwatch();}catch(e){}
+}
+function renderLogwatch(){
+  $("#lwEnabled").checked=!!lwCfg.enabled;
+  const srcOpts=t=>["system","user","kernel","file"].map(s=>`<option value="${s}" ${s===t?"selected":""}>${s}</option>`).join("");
+  $("#lwRules").innerHTML=(lwCfg.rules||[]).map((r,i)=>`
+    <div style="border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:6px">
+      <div class="row" style="margin-bottom:4px">
+        <input type="text" class="lwName" data-i="${i}" value="${esc(r.name||"")}" placeholder="rule name" style="width:140px">
+        <select class="btn lwSrc" data-i="${i}">${srcOpts(r.source)}</select>
+        <input type="text" class="lwPath" data-i="${i}" value="${esc(r.path||"")}" placeholder="/path/to/file (file source only)" style="flex:1;min-width:160px" class="mono">
+        <label class="pill"><input type="checkbox" class="lwEn" data-i="${i}" ${r.enabled!==false?"checked":""}> on</label>
+        <span class="hint" data-lwdel="${i}" style="color:var(--crit);cursor:pointer">✕</span></div>
+      <input type="text" class="lwPat" data-i="${i}" value="${esc(r.pattern||"")}" placeholder="regex, e.g. (OOM|panic|segfault|ERROR)" style="width:100%" class="mono"></div>`).join("")
+    ||'<span class="muted" style="font-size:12px">no rules</span>';
+  $("#lwRules").querySelectorAll("[data-lwdel]").forEach(el=>el.onclick=()=>{
+    collectLogwatch();lwCfg.rules.splice(+el.dataset.lwdel,1);renderLogwatch();});
+}
+function collectLogwatch(){
+  lwCfg.enabled=$("#lwEnabled").checked;
+  const names=[...document.querySelectorAll(".lwName")];
+  lwCfg.rules=names.map((n,i)=>({name:n.value.trim(),
+    source:document.querySelectorAll(".lwSrc")[i].value,
+    path:document.querySelectorAll(".lwPath")[i].value.trim(),
+    pattern:document.querySelectorAll(".lwPat")[i].value.trim(),
+    enabled:document.querySelectorAll(".lwEn")[i].checked}))
+    .filter(r=>r.name&&r.pattern);
+}
+$("#lwAdd")&&($("#lwAdd").onclick=()=>{collectLogwatch();
+  lwCfg.rules.push({name:"",source:"system",path:"",pattern:"",enabled:true});renderLogwatch();});
+$("#lwSave")&&($("#lwSave").onclick=async()=>{collectLogwatch();
+  try{const r=await api("/api/logwatchconfig",{method:"POST",body:JSON.stringify(lwCfg)});
+    lwCfg=r;renderLogwatch();$("#lwStat").textContent=r.enabled?"watching ✓":"saved (disabled)";
+    toast("log watchers saved");}catch(e){toast(e.message,false);}});
 function drawMonChart(hist){
   const svg=$("#monChart");
   const w=svg.clientWidth||900,h=180;

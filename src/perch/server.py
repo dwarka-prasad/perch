@@ -1513,12 +1513,88 @@ def notify(title, msg, critical=True):
         pass
 
 
+# ---- outbound notification channels (ntfy / Slack / Discord / webhook) ----
+
+def _notify_file():
+    return os.path.join(CFG_DIR, "notify.json")
+
+
+def notify_cfg():
+    cfg = {"desktop": True, "channels": []}
+    try:
+        with open(_notify_file()) as f:
+            cfg.update(json.load(f))
+    except (OSError, ValueError):
+        pass
+    return cfg
+
+
+def notify_save(body):
+    os.makedirs(CFG_DIR, exist_ok=True)
+    cfg = notify_cfg()
+    if "desktop" in body:
+        cfg["desktop"] = bool(body["desktop"])
+    if "channels" in body:
+        cfg["channels"] = [c for c in body["channels"]
+                           if c.get("type") and c.get("url")][:12]
+    with open(_notify_file(), "w") as f:
+        json.dump(cfg, f)
+    os.chmod(_notify_file(), 0o600)
+    return cfg
+
+
+def _post_channel(ch, title, msg):
+    import urllib.request as ur
+    url, t = ch["url"], ch["type"]
+    try:
+        if t == "ntfy":
+            req = ur.Request(url, data=msg.encode(), method="POST",
+                             headers={"Title": title, "Priority": "high",
+                                      "Tags": "warning"})
+        elif t == "slack":
+            req = ur.Request(url, method="POST",
+                             headers={"Content-Type": "application/json"},
+                             data=json.dumps({"text": f"*{title}*\n{msg}"}).encode())
+        elif t == "discord":
+            req = ur.Request(url, method="POST",
+                             headers={"Content-Type": "application/json"},
+                             data=json.dumps({"content": f"**{title}**\n{msg}"}).encode())
+        else:  # generic webhook
+            req = ur.Request(url, method="POST",
+                             headers={"Content-Type": "application/json"},
+                             data=json.dumps({"title": title, "message": msg,
+                                              "host": os.uname().nodename,
+                                              "time": time.time()}).encode())
+        ur.urlopen(req, timeout=10).read()
+        return True
+    except Exception:  # noqa: BLE001 — a broken channel must not break alerting
+        return False
+
+
+def dispatch(title, msg, critical=True):
+    """Fan a notification out to the desktop and every enabled channel."""
+    cfg = notify_cfg()
+    if cfg.get("desktop", True):
+        notify(title, msg, critical)
+    for ch in cfg.get("channels", []):
+        if ch.get("enabled", True):
+            threading.Thread(target=_post_channel, args=(ch, title, msg),
+                             daemon=True).start()
+
+
+def notify_test():
+    dispatch("Perch test", "If you can read this, alerts are wired up 🎉",
+             critical=False)
+    n = sum(1 for c in notify_cfg().get("channels", []) if c.get("enabled", True))
+    return {"ok": True, "channels": n}
+
+
 def _alert(rule, msg, value):
     os.makedirs(MON_DIR, exist_ok=True)
     with open(ALERTS_FILE, "a") as f:
         f.write(json.dumps({"t": time.time(), "rule": rule, "msg": msg,
                             "value": value}) + "\n")
-    notify("⚠ " + msg.split(" — ")[0], msg)
+    dispatch("⚠ " + msg.split(" — ")[0], msg)
 
 
 _mon_breach = {}    # rule -> breach start ts
@@ -1614,6 +1690,147 @@ def monitor_state():
     return {"cfg": mon_cfg(),
             "events": list(reversed(_tail_jsonl(ALERTS_FILE, 100))),
             "history": _tail_jsonl(MINUTES_FILE, 1440)}
+
+
+# ------------------------------------------------------- log-pattern watch ---
+# Poll the journal (system/user/kernel) or a file every LOGWATCH_INTERVAL s;
+# lines matching a rule's regex fire a notification (deduped, with cooldown).
+
+LOGWATCH_INTERVAL = 20
+_logwatch_stop = threading.Event()
+_logwatch_thread = [None]
+_lw_fired = {}          # match-key -> last fired ts
+_lw_offset = {}         # file path -> byte offset
+_lw_started_at = [0.0]
+
+
+def _logwatch_file():
+    return os.path.join(CFG_DIR, "logwatch.json")
+
+
+def logwatch_cfg():
+    cfg = {"enabled": False, "rules": []}
+    try:
+        with open(_logwatch_file()) as f:
+            cfg.update(json.load(f))
+    except (OSError, ValueError):
+        pass
+    return cfg
+
+
+def logwatch_save(body):
+    os.makedirs(CFG_DIR, exist_ok=True)
+    cfg = logwatch_cfg()
+    if "enabled" in body:
+        cfg["enabled"] = bool(body["enabled"])
+    if "rules" in body:
+        clean = []
+        for r in body["rules"][:20]:
+            if not r.get("pattern") or not r.get("name"):
+                continue
+            try:
+                re.compile(r["pattern"])
+            except re.error:
+                continue
+            clean.append({"name": r["name"], "pattern": r["pattern"],
+                          "source": r.get("source", "system"),
+                          "path": r.get("path", ""),
+                          "enabled": bool(r.get("enabled", True))})
+        cfg["rules"] = clean
+    with open(_logwatch_file(), "w") as f:
+        json.dump(cfg, f)
+    if cfg["enabled"]:
+        _logwatch_start()
+    else:
+        _logwatch_stop.set()
+    return cfg
+
+
+def _lw_journal_lines(source, since_iso):
+    flags = {"system": ["--system"], "user": ["--user"],
+             "kernel": ["--system", "-k"]}.get(source, ["--system"])
+    r = subprocess.run(["journalctl", *flags, "-o", "cat", "--no-pager",
+                        "--since", since_iso], capture_output=True, text=True,
+                       timeout=15)
+    return r.stdout.splitlines()
+
+
+def _lw_file_lines(path):
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return []
+    off = _lw_offset.get(path)
+    if off is None or off > size:          # first sight or truncation/rotation
+        _lw_offset[path] = size
+        return []
+    with open(path, errors="replace") as f:
+        f.seek(off)
+        data = f.read()
+        _lw_offset[path] = f.tell()
+    return data.splitlines()
+
+
+def _logwatch_loop():
+    import datetime
+    last = time.time()
+    while not _logwatch_stop.wait(LOGWATCH_INTERVAL):
+        cfg = logwatch_cfg()
+        if not cfg["enabled"]:
+            return
+        since = datetime.datetime.fromtimestamp(last).strftime("%Y-%m-%d %H:%M:%S")
+        last = time.time()
+        for rule in cfg["rules"]:
+            if not rule.get("enabled", True):
+                continue
+            try:
+                pat = re.compile(rule["pattern"])
+            except re.error:
+                continue
+            if rule.get("source") == "file" and rule.get("path"):
+                lines = _lw_file_lines(os.path.realpath(rule["path"]))
+            else:
+                lines = _lw_journal_lines(rule.get("source", "system"), since)
+            for line in lines:
+                if not pat.search(line):
+                    continue
+                key = rule["name"] + "|" + line[:200]
+                now = time.time()
+                if now - _lw_fired.get(key, 0) < 300:
+                    continue
+                _lw_fired[key] = now
+                _alert("logwatch:" + rule["name"],
+                       f"{rule['name']} — {line[:300]}", None)
+            if len(_lw_fired) > 500:
+                _lw_fired.clear()
+
+
+def _logwatch_start():
+    _logwatch_stop.clear()
+    _lw_offset.clear()  # re-seek files to current end so we don't replay
+    # seed each file rule's offset now, so appends after start are caught on
+    # the first poll (no startup swallow window)
+    for rule in logwatch_cfg()["rules"]:
+        if rule.get("source") == "file" and rule.get("path"):
+            p = os.path.realpath(rule["path"])
+            try:
+                _lw_offset[p] = os.path.getsize(p)
+            except OSError:
+                pass
+    if not (_logwatch_thread[0] and _logwatch_thread[0].is_alive()):
+        _logwatch_thread[0] = threading.Thread(target=_logwatch_loop,
+                                               daemon=True)
+        _logwatch_thread[0].start()
+
+
+def logwatch_state():
+    c = logwatch_cfg()
+    c["running"] = bool(_logwatch_thread[0] and _logwatch_thread[0].is_alive())
+    return c
+
+
+if logwatch_cfg()["enabled"]:
+    _logwatch_start()
 
 
 # ------------------------------------------------------------- http tester ---
@@ -2572,6 +2789,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(read_text_file(qs.get("path", [""])[0]))
             if route == "/api/monitor":
                 return self._json(monitor_state())
+            if route == "/api/notify":
+                return self._json(notify_cfg())
+            if route == "/api/logwatch":
+                return self._json(logwatch_state())
             if route == "/api/caps":
                 return self._json(capabilities())
             if route == "/api/updates":
@@ -2691,9 +2912,11 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/monitor":
                 return self._json({"ok": True, "cfg": mon_save(body)})
             if route == "/api/testnotify":
-                notify("Perch", "Test notification — alerts are "
-                       "working 🎉", critical=False)
-                return self._json({"ok": True})
+                return self._json(notify_test())
+            if route == "/api/notifyconfig":
+                return self._json(notify_save(body))
+            if route == "/api/logwatchconfig":
+                return self._json(logwatch_save(body))
             if route == "/api/http":
                 res = http_request(body.get("method"), body.get("url"),
                                    body.get("headers", ""), body.get("body", ""),

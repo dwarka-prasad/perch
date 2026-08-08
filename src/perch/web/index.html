@@ -91,6 +91,27 @@
       survives restarts</span></h2>
       <svg id="monChart" style="width:100%;height:180px"></svg>
       <div class="legend" id="monLegend"></div></div>
+    <div class="panel"><h2>Alert channels <span class="muted">— where alerts are sent</span></h2>
+      <div class="row"><label class="pill"><input type="checkbox" id="ntDesktop"> desktop notifications</label>
+        <button class="btn small" id="ntAdd">＋ Add channel</button>
+        <button class="btn small" id="ntSave">💾 Save</button>
+        <button class="btn small" id="ntTest">🔔 Test all</button>
+        <span class="muted" id="ntStat" style="font-size:12px"></span></div>
+      <div id="ntChannels" style="margin-top:8px"></div>
+      <div class="muted" style="font-size:11.5px;margin-top:6px">ntfy: your topic
+        URL (e.g. <span class="mono">https://ntfy.sh/my-perch</span>). Slack/Discord:
+        an incoming-webhook URL. Webhook: any endpoint — Perch POSTs
+        <span class="mono">{title,message,host,time}</span>. Stored in
+        <span class="mono">~/.config/perch/notify.json</span> (chmod 600).</div></div>
+    <div class="panel"><h2>Log-pattern watchers <span class="muted">— regex → alert</span></h2>
+      <div class="row"><label class="pill"><input type="checkbox" id="lwEnabled"> enable watching</label>
+        <button class="btn small" id="lwAdd">＋ Add rule</button>
+        <button class="btn small" id="lwSave">💾 Save</button>
+        <span class="muted" id="lwStat" style="font-size:12px"></span></div>
+      <div id="lwRules" style="margin-top:8px"></div>
+      <div class="muted" style="font-size:11.5px;margin-top:6px">Polls every 20 s.
+        A matching line fires the alert once (5-min de-dupe). File rules watch
+        appended lines; journal rules watch system / user / kernel logs.</div></div>
     <div class="panel"><h2>Alert history</h2>
       <table id="monEvents"><tbody></tbody></table></div>
   </section>

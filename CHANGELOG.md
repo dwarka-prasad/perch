@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Outbound alert channels** — when a Monitor rule (or a log watcher) fires,
+  Perch can notify **ntfy / Slack / Discord / a generic webhook** in addition
+  to the desktop, so alerts reach you when you're away from the machine.
+  Config in `~/.config/perch/notify.json` (chmod 600); "Test all" button.
+- **Log-pattern watchers** — define regex rules against the system / user /
+  kernel journal or any file; a matching line fires an alert (polled every
+  20 s, 5-minute de-dupe). Managed from the Monitor tab.
+
 ## 1.0.0 — final
 
 Adds a full **API client** (collections, environments with `{{vars}}`, request

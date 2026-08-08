@@ -32,7 +32,7 @@ an access token printed at startup.
 
 | Group | Tabs |
 |-------|------|
-| **System** | Overview (CPU/mem/GPU/disk/temp/net charts + hardware panel + **critical-log panel**), Monitor (threshold alerts + 24 h history), Processes (+ detail inspector), Logs, Kernel, Updates, Users |
+| **System** | Overview (CPU/mem/GPU/disk/temp/net charts + hardware panel + **critical-log panel**), Monitor (threshold alerts + **outbound notifications: ntfy/Slack/Discord/webhook** + **log-pattern watchers** + 24 h history), Processes (+ detail inspector), Logs, Kernel, Updates, Users |
 | **Storage & files** | Storage (disk + folder analyzer), Files (preview images/PDF/video/audio/Word/Excel, open-with, editor + vim mode, sketch, bulk trash), Search (regex), Clean up |
 | **Developer** | Network (ports, kill-by-port, speed test), Dev (Docker containers + live stats + compose + logs + shell + prune, services, toolchain), Git (repo dashboard: branch/dirty/ahead-behind, fetch/pull/stash), API client (collections, environments with `{{vars}}`, history, **flows** with run/export, **import** from Postman/curl/raw-HTTP), Runtimes (versions + switch defaults via rustup / update-alternatives), Tools (HTTP tester, JSON/YAML, regex, diff, cron, color/case, secrets, website preview) |
 | **Assistant** | AI chat + one-click **health report**, backed by a **pluggable provider**: the local Claude CLI (default, no key), the **Anthropic API**, any **OpenAI-compatible** endpoint, or a local **Ollama** model — configured in Settings |
