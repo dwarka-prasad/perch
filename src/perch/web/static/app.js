@@ -325,7 +325,7 @@ $("#jobClose").onclick=()=>{$("#jobBox").style.display="none";clearInterval(jobP
 
 /* ---- updates: upgrade actions ---- */
 $("#updApt")&&($("#updApt").onclick=()=>runJob(
-  api("/api/upgradeall",{method:"POST",body:JSON.stringify({mgr:"apt"})})));
+  api("/api/upgradeall",{method:"POST",body:JSON.stringify({mgr:"native"})})));
 $("#updSnap")&&($("#updSnap").onclick=()=>runJob(
   api("/api/upgradeall",{method:"POST",body:JSON.stringify({mgr:"snap"})})));
 
@@ -333,24 +333,21 @@ $("#updSnap")&&($("#updSnap").onclick=()=>runJob(
 async function pkgSearch(){
   const q=$("#pkgQ").value.trim();
   if(q.length<2)return;
-  $("#pkgStat").textContent="searching apt + snap…";
+  $("#pkgStat").textContent="searching…";
   try{
     const r=await api("/api/pkgsearch?q="+encodeURIComponent(q));
-    $("#pkgStat").textContent=`${r.apt.length} apt · ${r.snap.length} snap`;
-    const aptRow=p=>`<tr><td><b>${esc(p.name)}</b><br>
+    const nat=r.native||[],pm=r.native_pm||"native";
+    $("#pkgStat").textContent=`${nat.length} ${pm} · ${(r.snap||[]).length} snap`+
+      (CAPS&&CAPS.flatpak?` · ${(r.flatpak||[]).length} flatpak`:"");
+    const row=(p,mgr,sub)=>`<tr><td><b>${esc(p.title||p.name)}</b> <span class="muted" style="font-size:11px">${esc(sub||"")}</span><br>
       <span class="muted" style="font-size:11.5px">${esc(p.desc)}</span></td>
       <td class="num" style="white-space:nowrap">${p.installed
         ?`<span class="muted">installed</span>
-          <button class="btn small danger" data-pk="apt-remove" data-pn="${esc(p.name)}">Remove</button>`
-        :`<button class="btn small" data-pk="apt" data-pn="${esc(p.name)}">Install</button>`}</td></tr>`;
-    const snapRow=p=>`<tr><td><b>${esc(p.name)}</b> <span class="muted" style="font-size:11px">${esc(p.version||"")}</span><br>
-      <span class="muted" style="font-size:11.5px">${esc(p.desc)}</span></td>
-      <td class="num" style="white-space:nowrap">${p.installed
-        ?`<span class="muted">installed</span>
-          <button class="btn small danger" data-pk="snap-remove" data-pn="${esc(p.name)}">Remove</button>`
-        :`<button class="btn small" data-pk="snap" data-pn="${esc(p.name)}">Install</button>`}</td></tr>`;
-    $("#pkgApt").innerHTML=r.apt.length?`<table><tbody>${r.apt.map(aptRow).join("")}</tbody></table>`:'<span class="muted">no apt matches</span>';
-    $("#pkgSnap").innerHTML=r.snap.length?`<table><tbody>${r.snap.map(snapRow).join("")}</tbody></table>`:'<span class="muted">no snap matches</span>';
+          <button class="btn small danger" data-pk="${mgr}-remove" data-pn="${esc(p.name)}">Remove</button>`
+        :`<button class="btn small" data-pk="${mgr}" data-pn="${esc(p.name)}">Install</button>`}</td></tr>`;
+    $("#pkgApt").innerHTML=nat.length?`<table><tbody>${nat.map(p=>row(p,"native")).join("")}</tbody></table>`:`<span class="muted">no ${pm} matches</span>`;
+    $("#pkgSnap").innerHTML=(r.snap||[]).length?`<table><tbody>${r.snap.map(p=>row(p,"snap",p.version)).join("")}</tbody></table>`:'<span class="muted">no snap matches</span>';
+    $("#pkgFlat").innerHTML=(r.flatpak||[]).length?`<table><tbody>${r.flatpak.map(p=>row(p,"flatpak",p.name)).join("")}</tbody></table>`:'<span class="muted">no flatpak matches</span>';
     document.querySelectorAll("[data-pk]").forEach(b=>b.onclick=()=>{
       const rm=b.dataset.pk.includes("remove");
       if(!confirm(`${rm?"Remove":"Install"} ${b.dataset.pn}?\nA password dialog will appear.`))return;
@@ -1039,6 +1036,10 @@ function applyCaps(){
   hide(".cap-edit,#codeHere",!!CAPS.editor);
   hide(".cap-term,#termHere",CAPS.terminal);
   hide(".cap-open",CAPS.opener);
+  hide(".cap-gnome",CAPS.gnome!==false);
+  hide(".cap-snap",CAPS.snap!==false);
+  hide(".cap-flatpak",CAPS.flatpak!==false);
+  if(CAPS.native_pm)$("#pkgNativeH").textContent=CAPS.native_pm.toUpperCase();
   if(CAPS.editor&&CAPS.editor!=="code")
     $("#codeHere").textContent="⌨ Editor here";
 }

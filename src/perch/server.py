@@ -1172,7 +1172,7 @@ def health_report():
     """Rich system context → prioritized AI recommendations (markdown)."""
     ctx = [ai_snapshot()]
     try:
-        u = apt_updates()
+        u = pkg_updates()
         ctx.append(f"Updates: {u['count']} pending ({u['security']} security)")
     except Exception:  # noqa: BLE001
         pass
@@ -1927,26 +1927,58 @@ def http_request(method, url, headers_text="", body="", timeout=20):
 _upd_cache = {"t": 0.0, "data": None}
 
 
-def apt_updates(force=False):
+def _parse_updates(pm, out):
+    pkgs = []
+    if pm == "apt":
+        for line in out.splitlines():
+            m = re.match(r"^([^/]+)/(\S+)\s+(\S+)\s+\S+\s+\[upgradable from: "
+                         r"(.+)\]", line)
+            if m:
+                pkgs.append({"name": m.group(1), "repo": m.group(2),
+                             "new": m.group(3), "old": m.group(4),
+                             "security": "-security" in m.group(2)})
+    elif pm == "dnf":
+        for line in out.splitlines():
+            m = re.match(r"^(\S+)\.\S+\s+(\S+)\s+(\S+)\s*$", line)
+            if m:
+                pkgs.append({"name": m.group(1), "repo": m.group(3),
+                             "new": m.group(2), "old": "",
+                             "security": False})
+    elif pm == "pacman":
+        for line in out.splitlines():
+            m = re.match(r"^(\S+)\s+(\S+)\s+->\s+(\S+)", line)
+            if m:
+                pkgs.append({"name": m.group(1), "repo": "",
+                             "new": m.group(3), "old": m.group(2),
+                             "security": False})
+    elif pm == "zypper":
+        for line in out.splitlines():
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) >= 5 and parts[0] == "v":
+                pkgs.append({"name": parts[2], "repo": parts[1],
+                             "new": parts[4], "old": parts[3],
+                             "security": False})
+    return pkgs
+
+
+def pkg_updates(force=False):
     if not force and _upd_cache["data"] and time.time() - _upd_cache["t"] < 600:
         return _upd_cache["data"]
-    r = _run(["apt", "list", "--upgradable"], capture_output=True,
-                       text=True, timeout=30,
-                       env={**os.environ, "LC_ALL": "C"})
+    cmds = {"apt": ["apt", "list", "--upgradable"],
+            "dnf": ["dnf", "-q", "check-update"],
+            "pacman": ["pacman", "-Qu"],
+            "zypper": ["zypper", "-q", "lu"]}
     pkgs = []
-    for line in r.stdout.splitlines():
-        m = re.match(r"^([^/]+)/(\S+)\s+(\S+)\s+\S+\s+\[upgradable from: "
-                     r"(.+)\]", line)
-        if m:
-            pkgs.append({"name": m.group(1), "repo": m.group(2),
-                         "new": m.group(3), "old": m.group(4),
-                         "security": "-security" in m.group(2)})
+    if _PM:
+        r = _run(cmds[_PM], capture_output=True, text=True, timeout=60,
+                 env={**os.environ, "LC_ALL": "C"})
+        pkgs = _parse_updates(_PM, r.stdout)
     st = 0.0
     try:
         st = os.path.getmtime("/var/lib/apt/lists")
     except OSError:
         pass
-    data = {"packages": pkgs[:300], "count": len(pkgs),
+    data = {"packages": pkgs[:300], "count": len(pkgs), "pm": _PM,
             "security": sum(1 for p in pkgs if p["security"]),
             "lists_updated": st}
     _upd_cache.update(t=time.time(), data=data)
@@ -2051,7 +2083,22 @@ def capabilities():
         "notify": bool(shutil.which("notify-send")),
         "nmcli": bool(shutil.which("nmcli")),
         "yaml": True,
+        "native_pm": _PM,
+        "snap": _HAS_SNAP,
+        "flatpak": _HAS_FLATPAK,
+        # a working GNOME gsettings (needs the session dbus, not just the CLI)
+        "gnome": bool(shutil.which("gsettings"))
+                 and _gset(_IFACE, "color-scheme") is not None,
+        "battery": _has_battery(),
+        "wayland": os.environ.get("XDG_SESSION_TYPE") == "wayland",
     }
+
+
+def _has_battery():
+    try:
+        return psutil.sensors_battery() is not None
+    except (OSError, RuntimeError):
+        return False
 
 
 MIMES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -2097,7 +2144,9 @@ def start_job(argv, title, privileged=False):
         _job_seq[0] += 1
         jid = str(_job_seq[0])
     if privileged and os.geteuid() != 0:
-        argv = ["pkexec", *argv]
+        # the wrapper gives a branded polkit prompt + session-long auth cache
+        wrapper = shutil.which("perch-pkexec")
+        argv = ["pkexec", wrapper, *argv] if wrapper else ["pkexec", *argv]
     job = {"id": jid, "title": title, "cmd": " ".join(argv),
            "lines": ["$ " + " ".join(argv), ""], "status": "running",
            "code": None, "started": time.time()}
@@ -2143,69 +2192,166 @@ def job_status(jid, since=0):
 
 
 # ------------------------------------------------------------- packages ------
+# Native package manager abstraction: apt / dnf / pacman / zypper detected at
+# startup, plus snap and flatpak as universal extras when installed.
+
+
+def _native_pm():
+    for pm in ("apt", "dnf", "pacman", "zypper"):
+        if shutil.which(pm):
+            return pm
+    return None
+
+
+_PM = _native_pm()
+_HAS_SNAP = bool(shutil.which("snap"))
+_HAS_FLATPAK = bool(shutil.which("flatpak"))
+
+_PM_SEARCH = {
+    "apt": lambda q: ["apt-cache", "search", "--names-only", q],
+    "dnf": lambda q: ["dnf", "-q", "search", q],
+    "pacman": lambda q: ["pacman", "-Ss", q],
+    "zypper": lambda q: ["zypper", "-q", "se", q],
+}
+_PM_INSTALL = {
+    "apt": lambda n: ["apt-get", "install", "-y", n],
+    "dnf": lambda n: ["dnf", "install", "-y", n],
+    "pacman": lambda n: ["pacman", "-S", "--noconfirm", n],
+    "zypper": lambda n: ["zypper", "-n", "install", n],
+}
+_PM_REMOVE = {
+    "apt": lambda n: ["apt-get", "remove", "-y", n],
+    "dnf": lambda n: ["dnf", "remove", "-y", n],
+    "pacman": lambda n: ["pacman", "-R", "--noconfirm", n],
+    "zypper": lambda n: ["zypper", "-n", "remove", n],
+}
+_PM_UPGRADE = {
+    "apt": ["sh", "-c", "apt-get update && apt-get upgrade -y"],
+    "dnf": ["dnf", "upgrade", "-y"],
+    "pacman": ["pacman", "-Syu", "--noconfirm"],
+    "zypper": ["sh", "-c", "zypper -n refresh && zypper -n update"],
+}
+
+
+def _parse_pm_search(pm, out):
+    pkgs = []
+    if pm == "apt":
+        for line in out.splitlines():
+            if " - " in line:
+                name, desc = line.split(" - ", 1)
+                pkgs.append({"name": name.strip(), "desc": desc[:120]})
+    elif pm == "dnf":
+        for line in out.splitlines():
+            m = re.match(r"^(\S+)\.\S+\s*:\s*(.*)", line)
+            if m:
+                pkgs.append({"name": m.group(1), "desc": m.group(2)[:120]})
+    elif pm == "pacman":
+        cur = None
+        for line in out.splitlines():
+            m = re.match(r"^\S+/(\S+)\s+\S+", line)
+            if m:
+                cur = {"name": m.group(1), "desc": ""}
+                pkgs.append(cur)
+            elif cur is not None and line[:1] in (" ", "\t"):
+                cur["desc"] = (cur["desc"] + " " + line.strip()).strip()[:120]
+    elif pm == "zypper":
+        for line in out.splitlines():
+            parts = [p.strip() for p in line.split("|")]
+            if (len(parts) >= 4 and parts[1] and parts[1] != "Name"
+                    and not set(parts[1]) <= {"-", "+"}):
+                pkgs.append({"name": parts[1], "desc": parts[2][:120]})
+    return pkgs[:40]
+
+
+def _installed_native():
+    if _PM == "apt":
+        r = _run(["dpkg-query", "-f", "${Package}\n", "-W"],
+                 capture_output=True, text=True)
+    elif _PM in ("dnf", "zypper"):
+        r = _run(["rpm", "-qa", "--qf", "%{NAME}\n"],
+                 capture_output=True, text=True, timeout=30)
+    elif _PM == "pacman":
+        r = _run(["pacman", "-Qq"], capture_output=True, text=True)
+    else:
+        return set()
+    return set(r.stdout.split())
 
 
 def pkg_search(q):
     q = q.strip()
+    out = {"native_pm": _PM, "native": [], "snap": [], "flatpak": []}
     if len(q) < 2:
-        return {"apt": [], "snap": []}
-    apt = []
-    r = _run(["apt-cache", "search", "--names-only", q],
-                       capture_output=True, text=True, timeout=20,
-                       env={**os.environ, "LC_ALL": "C"})
-    installed = set()
-    ri = _run(["dpkg-query", "-f", "${Package}\n", "-W"],
-                        capture_output=True, text=True)
-    installed = set(ri.stdout.split())
-    for line in r.stdout.splitlines()[:40]:
-        if " - " in line:
-            name, desc = line.split(" - ", 1)
-            name = name.strip()
-            apt.append({"name": name, "desc": desc[:120],
-                        "installed": name in installed})
-    snap = []
-    rs = _run(["snap", "find", q], capture_output=True, text=True,
-                        timeout=25, env={**os.environ, "LC_ALL": "C"})
-    lines = rs.stdout.splitlines()
-    snap_inst = set()
-    rsl = _run(["snap", "list"], capture_output=True, text=True)
-    for ln in rsl.stdout.splitlines()[1:]:
-        snap_inst.add(ln.split()[0])
-    for line in lines[1:21]:
-        parts = line.split(None, 4)
-        if len(parts) >= 5:
-            snap.append({"name": parts[0], "version": parts[1],
-                         "publisher": parts[2], "desc": parts[4][:120],
-                         "installed": parts[0] in snap_inst})
-    return {"apt": apt, "snap": snap}
+        return out
+    if _PM:
+        r = _run(_PM_SEARCH[_PM](q), capture_output=True, text=True,
+                 timeout=30, env={**os.environ, "LC_ALL": "C"})
+        installed = _installed_native()
+        out["native"] = [{**p, "installed": p["name"] in installed}
+                         for p in _parse_pm_search(_PM, r.stdout)]
+    if _HAS_SNAP:
+        rs = _run(["snap", "find", q], capture_output=True, text=True,
+                  timeout=25, env={**os.environ, "LC_ALL": "C"})
+        rsl = _run(["snap", "list"], capture_output=True, text=True)
+        snap_inst = {ln.split()[0] for ln in rsl.stdout.splitlines()[1:] if ln}
+        for line in rs.stdout.splitlines()[1:21]:
+            parts = line.split(None, 4)
+            if len(parts) >= 5:
+                out["snap"].append(
+                    {"name": parts[0], "version": parts[1],
+                     "publisher": parts[2], "desc": parts[4][:120],
+                     "installed": parts[0] in snap_inst})
+    if _HAS_FLATPAK:
+        rf = _run(["flatpak", "search",
+                   "--columns=application,name,description", q],
+                  capture_output=True, text=True, timeout=30)
+        ri = _run(["flatpak", "list", "--columns=application"],
+                  capture_output=True, text=True)
+        flat_inst = set(ri.stdout.split())
+        for line in rf.stdout.splitlines()[:20]:
+            parts = line.split("\t")
+            if len(parts) >= 2 and "." in parts[0]:
+                out["flatpak"].append(
+                    {"name": parts[0], "title": parts[1],
+                     "desc": (parts[2] if len(parts) > 2 else "")[:120],
+                     "installed": parts[0] in flat_inst})
+    return out
 
 
 def pkg_install(mgr, name):
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.+_-]{0,80}", name):
         raise ValueError("invalid package name")
-    if mgr == "apt":
-        return start_job(["apt-get", "install", "-y", name],
-                         f"Install {name} (apt)", privileged=True)
+    if mgr in ("native", "apt") and _PM:
+        return start_job(_PM_INSTALL[_PM](name),
+                         f"Install {name} ({_PM})", privileged=True)
+    if mgr in ("native-remove", "apt-remove") and _PM:
+        return start_job(_PM_REMOVE[_PM](name),
+                         f"Remove {name} ({_PM})", privileged=True)
     if mgr == "snap":
         return start_job(["snap", "install", name],
                          f"Install {name} (snap)", privileged=True)
-    if mgr == "apt-remove":
-        return start_job(["apt-get", "remove", "-y", name],
-                         f"Remove {name} (apt)", privileged=True)
     if mgr == "snap-remove":
         return start_job(["snap", "remove", name],
                          f"Remove {name} (snap)", privileged=True)
+    if mgr == "flatpak":  # flatpak talks to polkit itself — no pkexec
+        return start_job(["flatpak", "install", "-y", "--noninteractive",
+                          name], f"Install {name} (flatpak)")
+    if mgr == "flatpak-remove":
+        return start_job(["flatpak", "uninstall", "-y", name],
+                         f"Remove {name} (flatpak)")
     raise ValueError("unknown package manager")
 
 
 def upgrade_all(mgr):
     _upd_cache["t"] = 0
-    if mgr == "apt":
-        return start_job(["sh", "-c", "apt-get update && apt-get upgrade -y"],
-                         "Upgrade all apt packages", privileged=True)
+    if mgr in ("native", "apt") and _PM:
+        return start_job(_PM_UPGRADE[_PM],
+                         f"Upgrade all {_PM} packages", privileged=True)
     if mgr == "snap":
         return start_job(["snap", "refresh"], "Refresh all snaps",
                          privileged=True)
+    if mgr == "flatpak":
+        return start_job(["flatpak", "update", "-y"],
+                         "Update all flatpaks")
     raise ValueError("unknown package manager")
 
 
@@ -2992,7 +3138,7 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/caps":
                 return self._json(capabilities())
             if route == "/api/updates":
-                return self._json(apt_updates(qs.get("force", ["0"])[0] == "1"))
+                return self._json(pkg_updates(qs.get("force", ["0"])[0] == "1"))
             if route == "/api/procinfo":
                 return self._json(proc_detail(int(qs.get("pid", ["0"])[0])))
             if route == "/api/speedtest":

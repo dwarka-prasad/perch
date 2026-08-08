@@ -433,8 +433,9 @@
       </div>
       <div class="muted" id="pkgStat" style="font-size:12px;margin-bottom:8px"></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-        <div><h2 style="margin-bottom:6px">APT</h2><div id="pkgApt" class="muted">—</div></div>
-        <div><h2 style="margin-bottom:6px">Snap</h2><div id="pkgSnap" class="muted">—</div></div>
+        <div><h2 style="margin-bottom:6px" id="pkgNativeH">Packages</h2><div id="pkgApt" class="muted">—</div></div>
+        <div class="cap-snap"><h2 style="margin-bottom:6px">Snap</h2><div id="pkgSnap" class="muted">—</div></div>
+        <div class="cap-flatpak"><h2 style="margin-bottom:6px">Flatpak</h2><div id="pkgFlat" class="muted">—</div></div>
       </div>
       <div class="muted" style="font-size:12px;margin-top:10px">Installing needs
         admin rights — a password dialog appears. Live output shows in the job box.</div>
@@ -446,13 +447,13 @@
       <div id="setDisplay" class="muted">loading…</div></div>
     <div class="panel"><h2>Power &amp; session</h2>
       <div id="setPower" class="muted">loading…</div></div>
-    <div class="panel"><h2>Night light</h2>
+    <div class="panel cap-gnome"><h2>Night light</h2>
       <div id="setNight" class="muted">loading…</div></div>
     <div class="panel"><h2>Input &amp; notifications</h2>
       <div id="setInput" class="muted">loading…</div></div>
     <div class="panel"><h2>Connectivity</h2>
       <div id="setConn" class="muted">loading…</div></div>
-    <div class="panel"><h2>Desktop appearance</h2>
+    <div class="panel cap-gnome"><h2>Desktop appearance</h2>
       <div class="row"><span style="width:130px">GNOME theme</span>
         <div class="seg" id="setTheme">
           <button data-th="prefer-light">Light</button>
@@ -476,7 +477,7 @@
             <label class="pill"><input type="checkbox" id="ssShuffle" checked> shuffle</label>
             <button class="btn tog" id="ssToggle">⚪ Off</button></div>
         </div></div></div>
-    <div class="panel"><h2>Tweaks <span class="muted">— GNOME appearance &amp; behavior</span></h2>
+    <div class="panel cap-gnome"><h2>Tweaks <span class="muted">— GNOME appearance &amp; behavior</span></h2>
       <div id="setTweaks" class="muted">loading…</div></div>
     <div class="panel"><h2>AI provider <span class="muted">— powers the AI tab &amp; health report</span></h2>
       <div class="row"><span style="width:130px">Provider</span>

@@ -131,6 +131,51 @@ class SetSettingValidation(unittest.TestCase):
             S.set_setting("font_name", "   ")
 
 
+class PmParsers(unittest.TestCase):
+    def test_apt_search(self):
+        out = "htop - interactive processes viewer\nbtop - modern monitor\n"
+        p = S._parse_pm_search("apt", out)
+        self.assertEqual(p[0], {"name": "htop", "desc":
+                                "interactive processes viewer"})
+
+    def test_dnf_search(self):
+        out = "htop.x86_64 : Interactive process viewer\n"
+        p = S._parse_pm_search("dnf", out)
+        self.assertEqual(p[0]["name"], "htop")
+
+    def test_pacman_search(self):
+        out = ("extra/htop 3.3.0-1\n    Interactive process viewer\n"
+               "extra/btop 1.3.2-1\n    A monitor of resources\n")
+        p = S._parse_pm_search("pacman", out)
+        self.assertEqual([x["name"] for x in p], ["htop", "btop"])
+        self.assertEqual(p[0]["desc"], "Interactive process viewer")
+
+    def test_zypper_search(self):
+        out = ("S | Name | Summary                    | Type\n"
+               "--+------+----------------------------+--------\n"
+               "  | htop | Interactive process viewer | package\n")
+        p = S._parse_pm_search("zypper", out)
+        self.assertEqual(p[0]["name"], "htop")
+
+    def test_apt_updates(self):
+        out = ("curl/jammy-security 7.81.0-1ubuntu1.16 amd64 "
+               "[upgradable from: 7.81.0-1ubuntu1.15]\n")
+        p = S._parse_updates("apt", out)
+        self.assertEqual(p[0]["name"], "curl")
+        self.assertTrue(p[0]["security"])
+
+    def test_pacman_updates(self):
+        p = S._parse_updates("pacman", "linux 6.9.1-1 -> 6.9.2-1\n")
+        self.assertEqual(p[0], {"name": "linux", "repo": "",
+                                "new": "6.9.2-1", "old": "6.9.1-1",
+                                "security": False})
+
+    def test_dnf_updates(self):
+        p = S._parse_updates("dnf", "curl.x86_64  8.6.0-1.fc40  updates\n")
+        self.assertEqual(p[0]["name"], "curl")
+        self.assertEqual(p[0]["new"], "8.6.0-1.fc40")
+
+
 class HttpSmoke(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

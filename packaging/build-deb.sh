@@ -14,7 +14,8 @@ install -d "$STAGE/DEBIAN" \
            "$STAGE/usr/lib/perch/perch" \
            "$STAGE/usr/bin" \
            "$STAGE/usr/share/applications" \
-           "$STAGE/usr/share/icons/hicolor/scalable/apps"
+           "$STAGE/usr/share/icons/hicolor/scalable/apps" \
+           "$STAGE/usr/share/polkit-1/actions"
 
 cp -r "$ROOT/src/perch/." "$STAGE/usr/lib/perch/perch/"
 find "$STAGE/usr/lib/perch" -name __pycache__ -type d -prune -exec rm -rf {} +
@@ -35,6 +36,17 @@ cat > "$STAGE/usr/bin/perch-desktop" <<'EOF'
 exec env PYTHONPATH=/usr/lib/perch python3 -m perch.desktop "$@"
 EOF
 chmod 0755 "$STAGE/usr/bin/perch" "$STAGE/usr/bin/perch-desktop"
+
+# --- polkit: one branded, session-cached prompt for package management ------
+cp "$ROOT/packaging/dev.perch.policy" \
+   "$STAGE/usr/share/polkit-1/actions/dev.perch.policy"
+cat > "$STAGE/usr/bin/perch-pkexec" <<'EOF'
+#!/bin/sh
+# Target of the dev.perch.pkexec.package-management polkit action.
+# Runs the privileged command Perch's job runner passes as arguments.
+exec "$@"
+EOF
+chmod 0755 "$STAGE/usr/bin/perch-pkexec"
 
 # --- build -----------------------------------------------------------------
 DEB="$OUT/perch_${VERSION}_all.deb"
