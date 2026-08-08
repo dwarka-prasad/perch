@@ -36,7 +36,7 @@ an access token printed at startup.
 | **Storage & files** | Storage (disk + folder analyzer), Files (preview images/PDF/video/audio/Word/Excel, open-with, editor + vim mode, sketch, bulk trash), Search (regex), Clean up |
 | **Developer** | Network (ports, kill-by-port, speed test), Dev (Docker, services, toolchain), Runtimes, Tools (HTTP tester, JSON/YAML, regex, diff, cron, color/case, secrets, website preview) |
 | **Assistant** | AI chat backed by the local Claude CLI with a live system snapshot |
-| **Settings** | Brightness, volume, Bluetooth, Wi-Fi, theme, wallpaper |
+| **Settings** | Brightness, volume, power profile, blank/suspend timers, night light, Do Not Disturb, battery %, tap-to-click, natural scroll, text size, Bluetooth, Wi-Fi, GNOME theme, wallpaper + **live wallpaper slideshow**; **dashboard theming** — accent colours, live animated backgrounds (aurora/particles), and a drag-to-reorder **customizable home screen** |
 | **Packages** | Search & install/remove via apt + snap |
 
 Plus a **Ctrl+K command palette**, a grouped sidebar with live CPU/MEM/DISK
