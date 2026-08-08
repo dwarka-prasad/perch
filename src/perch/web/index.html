@@ -185,6 +185,15 @@
       <pre id="dfOut" class="mono" style="display:none;font-size:12px;background:var(--track);
         padding:10px;border-radius:8px;white-space:pre-wrap;max-height:300px;overflow:auto"></pre>
     </div>
+    <div class="panel"><h2>Scheduled tasks <span class="muted">— crontab &amp; systemd timers</span></h2>
+      <h2 style="margin-bottom:6px">Crontab</h2>
+      <textarea id="cronEdit" class="mono" rows="5" style="width:100%;min-width:200px"
+        placeholder="# m h dom mon dow  command"></textarea>
+      <div class="row" style="margin-top:6px;margin-bottom:12px">
+        <button class="btn" id="cronSave">💾 Save crontab</button>
+        <span class="muted" id="cronStat" style="font-size:12px"></span></div>
+      <h2 style="margin-bottom:6px">systemd timers</h2>
+      <table id="timerTable"><tbody></tbody></table></div>
     <div class="panel"><h2>More utilities</h2>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px">
         <div><h2 style="margin-bottom:8px">Cron explainer</h2>

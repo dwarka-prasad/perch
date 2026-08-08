@@ -46,7 +46,7 @@ document.querySelectorAll("nav button[data-tab]").forEach(b=>b.onclick=()=>{
     ai:()=>$("#aiIn").focus(),monitor:loadMonitor,
     updates:loadUpdates,packages:()=>$("#pkgQ").focus(),
     settings:loadSettings,runtimes:loadRuntimes,term:openTerminal,
-    db:loadDb,git:loadGit,api:loadApiClient}[b.dataset.tab]||(()=>{}))();
+    db:loadDb,git:loadGit,api:loadApiClient,tools:loadSched}[b.dataset.tab]||(()=>{}))();
 });
 function goTab(name){
   const b=document.querySelector(`nav button[data-tab="${CSS.escape(name)}"]`);
@@ -1110,6 +1110,39 @@ function sendResize(){
     TERM_WS.send("r"+JSON.stringify({cols:TERM.cols,rows:TERM.rows}));
 }
 $("#termReset")&&($("#termReset").onclick=()=>openTerminal(true));
+
+/* ---- scheduled tasks: crontab + systemd timers ---- */
+let schedLoaded=false;
+async function loadSched(){
+  if(schedLoaded)return;schedLoaded=true;
+  try{
+    const c=await api("/api/cron");
+    $("#cronEdit").value=c.raw||"";
+    if(!c.installed)$("#cronStat").textContent="cron is not installed";
+  }catch(e){}
+  loadTimers();
+  $("#cronSave").onclick=async()=>{
+    try{await api("/api/cronsave",{method:"POST",
+      body:JSON.stringify({text:$("#cronEdit").value})});
+      $("#cronStat").textContent="saved ✓";}
+    catch(e){$("#cronStat").textContent="";toast(e.message,false);}};
+}
+async function loadTimers(){
+  try{
+    const r=await api("/api/timers");
+    $("#timerTable").innerHTML=r.timers.map(t=>`<tr>
+      <td><b class="mono" style="font-size:12px">${esc(t.unit)}</b>
+        <span class="muted" style="font-size:11px">${t.scope}</span></td>
+      <td class="muted" style="font-size:12px">${esc(t.left||t.next||"—")}</td>
+      <td class="num">${t.scope==="user"
+        ?`<button class="btn small" data-tu="${esc(t.unit)}" data-ta="${t.enabled?"disable":"enable"}">${t.enabled?"Disable":"Enable"}</button>`
+        :`<span class="muted" style="font-size:11px">${t.enabled?"enabled":"disabled"}</span>`}</td></tr>`).join("");
+    document.querySelectorAll("[data-tu]").forEach(b=>b.onclick=async()=>{
+      try{await api("/api/timeraction",{method:"POST",
+        body:JSON.stringify({unit:b.dataset.tu,action:b.dataset.ta})});
+        loadTimers();}catch(e){toast(e.message,false);}});
+  }catch(e){}
+}
 
 /* ---- database browser ---- */
 let dbEngine="sqlite",dbLoaded=false;

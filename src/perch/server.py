@@ -3044,6 +3044,71 @@ def pg_query(conn_str, sql, container="", allow_write=False, limit=500):
     return {"columns": cols, "rows": rows, "rowcount": len(rows)}
 
 
+def crontab_get():
+    r = _run(["crontab", "-l"], capture_output=True, text=True)
+    text = r.stdout if r.returncode == 0 else ""
+    entries = []
+    for line in text.splitlines():
+        s = line.strip()
+        if s and not s.startswith("#") and "=" not in s.split()[0]:
+            parts = s.split(None, 5)
+            if len(parts) >= 6:
+                entries.append({"schedule": " ".join(parts[:5]),
+                                "command": parts[5]})
+    return {"raw": text, "entries": entries,
+            "installed": bool(shutil.which("crontab"))}
+
+
+def crontab_set(text):
+    if len(text) > 64000:
+        raise ValueError("crontab too large")
+    p = subprocess.Popen(["crontab", "-"], stdin=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True)
+    _, err = p.communicate(text if text.endswith("\n") else text + "\n",
+                          timeout=10)
+    if p.returncode != 0:
+        raise ValueError((err.strip() or "crontab rejected")[:300])
+    return crontab_get()
+
+
+def timers_list():
+    out = []
+    for scope in ("--user", "--system"):
+        r = _run(["systemctl", scope, "list-timers", "--all", "--no-pager",
+                  "--output=json"], capture_output=True, text=True)
+        if r.returncode != 0:
+            continue
+        try:
+            data = json.loads(r.stdout or "[]")
+        except ValueError:
+            continue
+        for t in data:
+            unit = t.get("unit", "")
+            en = _run(["systemctl", scope, "is-enabled", unit],
+                      capture_output=True, text=True)
+            out.append({"unit": unit, "scope": scope.strip("-"),
+                        "next": t.get("next", "") or "",
+                        "left": t.get("left", "") or "",
+                        "activates": t.get("activates", ""),
+                        "enabled": en.stdout.strip() == "enabled"})
+    return {"timers": out}
+
+
+_TIMER_RE = re.compile(r"^[\w@.\\:-]+\.timer$")
+
+
+def timer_action(unit, action):
+    if action not in ("enable", "disable", "start", "stop") \
+            or not _TIMER_RE.fullmatch(unit):
+        raise ValueError("bad timer action")
+    args = ["--now"] if action in ("enable", "disable") else []
+    r = _run(["systemctl", "--user", action, *args, unit],
+             capture_output=True, text=True, timeout=20)
+    if r.returncode != 0:
+        raise ValueError((r.stderr.strip() or "failed")[:300])
+    return timers_list()
+
+
 def pg_containers():
     """Running containers whose image looks like Postgres — for a quick picker."""
     if not shutil.which("docker"):
@@ -3595,6 +3660,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(maintenance_get())
             if route == "/api/pgcontainers":
                 return self._json({"containers": pg_containers()})
+            if route == "/api/cron":
+                return self._json(crontab_get())
+            if route == "/api/timers":
+                return self._json(timers_list())
             if route == "/api/updates":
                 return self._json(pkg_updates(qs.get("force", ["0"])[0] == "1"))
             if route == "/api/procinfo":
@@ -3760,6 +3829,10 @@ class Handler(BaseHTTPRequestHandler):
                         body.get("conn", ""), body.get("sql", ""),
                         body.get("container", ""), bool(body.get("write"))))
                 return self._err("unknown engine")
+            if route == "/api/cronsave":
+                return self._json(crontab_set(body.get("text", "")))
+            if route == "/api/timeraction":
+                return self._json(timer_action(body["unit"], body["action"]))
             if route == "/api/openwith":
                 return self._json({"ok": True,
                                    "app": open_with(body["app"], body["path"])})
