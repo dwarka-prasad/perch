@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.1
 
 - **Fix: terminal Fullscreen button** — now reliably fills the window (an
   in-app maximize) instead of depending only on the native Fullscreen API,
