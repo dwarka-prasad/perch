@@ -766,8 +766,25 @@ document.querySelectorAll("[data-dest]").forEach(b=>b.onclick=()=>{
 applyTiles();
 initAccentUI();
 if(bgMode!=="none")startBg(bgMode);
+/* ---- overview: critical logs needing attention ---- */
+async function loadCritLogs(){
+  try{
+    const r=await api("/api/logs?source=system&prio=3&n=60");
+    const rows=(r.entries||[]).slice(-8).reverse();
+    $("#critLogs").innerHTML=rows.length?rows.map(e=>{
+      const t=new Date(e.t*1000).toLocaleString([],{month:"short",day:"numeric",
+        hour:"2-digit",minute:"2-digit"});
+      return `<div style="padding:3px 0;border-bottom:1px solid var(--grid)">
+        <span class="muted">${t}</span>
+        <b class="mono" style="color:var(--s1);font-size:11px">${esc(e.unit.replace(/\.service$/,""))}</b>
+        <span style="color:var(--crit)">${esc(e.msg)}</span></div>`;
+    }).join(""):'<span style="color:var(--goodtext)">no recent errors 🎉</span>';
+  }catch(e){$("#critLogs").innerHTML='<span class="muted">log read unavailable</span>';}
+}
+$("#critMore")&&($("#critMore").onclick=()=>goTab("logs"));
 loadOverview();setInterval(loadOverview,2500);
 loadHW();setInterval(loadHW,60000);
+loadCritLogs();setInterval(loadCritLogs,60000);
 
 /* ---- storage ---- */
 let showSmall=false;
@@ -1297,47 +1314,6 @@ $("#monTest").onclick=async()=>{
   catch(e){toast(e.message,false);}
 };
 
-/* ---- tools: http tester ---- */
-let lastCurl="";
-$("#hSend").onclick=async()=>{
-  const url=$("#hUrl").value.trim();
-  if(!url)return toast("enter a URL",false);
-  $("#hResMeta").innerHTML='<span class="muted">sending…</span>';
-  $("#hRes").style.display=$("#hResHead").style.display="none";
-  try{
-    const r=await api("/api/http",{method:"POST",body:JSON.stringify({
-      method:$("#hMethod").value,url,headers:$("#hHeaders").value,
-      body:$("#hBody").value})});
-    lastCurl=r.curl;
-    const ok=r.status<400;
-    $("#hResMeta").innerHTML=`
-      <span class="pill" style="border-color:${ok?"var(--good)":"var(--crit)"}">
-        ${ok?"✓":"✗"} ${r.status} ${esc(r.reason||"")}</span>
-      <span class="muted">${r.ms} ms · ${fmtB(r.size)}</span>
-      <button class="btn small" id="hShowHead">headers</button>
-      <button class="btn small" id="hFmt">format JSON</button>
-      <button class="btn small" id="hCopyBody">copy body</button>`;
-    $("#hResHead").textContent=Object.entries(r.headers).map(([k,v])=>k+": "+v).join("\n");
-    $("#hRes").textContent=r.body||"(empty body)";
-    $("#hRes").style.display="block";
-    $("#hShowHead").onclick=()=>{const e=$("#hResHead");
-      e.style.display=e.style.display==="none"?"block":"none";};
-    $("#hFmt").onclick=()=>{try{
-      $("#hRes").textContent=JSON.stringify(JSON.parse(r.body),null,2);}
-      catch(err){toast("response is not valid JSON",false);}};
-    $("#hCopyBody").onclick=()=>copyText($("#hRes").textContent);
-  }catch(e){$("#hResMeta").innerHTML="";toast(e.message,false);}
-};
-$("#hUrl").onkeydown=e=>{if(e.key==="Enter")$("#hSend").click();};
-$("#hCurl").onclick=()=>{
-  if(lastCurl)return copyText(lastCurl);
-  const url=$("#hUrl").value.trim();
-  if(!url)return toast("enter a URL first",false);
-  let c=`curl -X ${$("#hMethod").value} '${url}'`;
-  $("#hHeaders").value.split("\n").forEach(l=>{if(l.includes(":"))c+=` -H '${l.trim()}'`;});
-  if($("#hBody").value)c+=` -d '${$("#hBody").value}'`;
-  copyText(c);
-};
 
 /* ---- tools: json ---- */
 function jParse(){
@@ -1678,12 +1654,15 @@ async function loadGit(){
 }
 $("#gitReload")&&($("#gitReload").onclick=loadGit);
 
-/* ---- API client (mini-Postman) ---- */
-let apiStore={collections:[],environments:{},active_env:"",history:[]};
+/* ---- API client (mini-Postman: collections, envs, flows, import) ---- */
+let apiStore={collections:[],environments:{},active_env:"",history:[],flows:[]};
+function curReq(){return {method:$("#hMethod2").value,url:$("#hUrl2").value,
+  headers:$("#hHeaders2").value,body:$("#hBody2").value};}
+function loadReq(r){$("#hMethod2").value=r.method||"GET";$("#hUrl2").value=r.url||"";
+  $("#hHeaders2").value=r.headers||"";$("#hBody2").value=r.body||"";}
 async function loadApiClient(){
-  try{
-    apiStore=await api("/api/httpstore");
-    renderApiEnv();renderApiCollections();renderApiHistory();
+  try{apiStore=await api("/api/httpstore");apiStore.flows=apiStore.flows||[];
+    renderApiEnv();renderApiCollections();renderApiFlows();renderApiHistory();
   }catch(e){toast(e.message,false);}
 }
 function renderApiEnv(){
@@ -1693,27 +1672,48 @@ function renderApiEnv(){
   sel.onchange=()=>{apiStore.active_env=sel.value;saveApiStore();};
 }
 function renderApiCollections(){
-  const box=$("#apiCollections");
-  const cols=apiStore.collections||[];
-  if(!cols.length){box.innerHTML='<span class="muted">no saved requests</span>';return;}
+  const box=$("#apiCollections");const cols=apiStore.collections||[];
+  if(!cols.length){box.innerHTML='<span class="muted">no collections — Import or Save a request</span>';return;}
   box.innerHTML=cols.map((c,ci)=>`<div style="margin-bottom:8px">
-    <b style="font-size:12.5px">${esc(c.name)}</b>${(c.requests||[]).map((r,ri)=>`
-    <div class="palItem" data-ci="${ci}" data-ri="${ri}" style="padding:4px 8px">
+    <b style="font-size:12.5px">${esc(c.name)}</b>
+    <span class="hint" data-delcol="${ci}" style="color:var(--crit);cursor:pointer">✕</span>${(c.requests||[]).map((r,ri)=>`
+    <div class="palItem" data-ci="${ci}" data-ri="${ri}" style="padding:3px 8px">
       <span class="mono" style="font-size:10.5px;color:var(--s1)">${esc(r.method)}</span>
-      <span style="font-size:12px">${esc(r.name||r.url)}</span>
+      <span style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.name||r.url)}</span>
       <span class="hint" data-del="${ci}:${ri}" style="color:var(--crit)">✕</span></div>`).join("")}</div>`).join("");
   box.querySelectorAll("[data-ci]").forEach(el=>el.onclick=e=>{
     if(e.target.dataset.del)return;
-    const r=apiStore.collections[+el.dataset.ci].requests[+el.dataset.ri];
-    $("#hMethod2").value=r.method;$("#hUrl2").value=r.url;
-    $("#hHeaders2").value=r.headers||"";$("#hBody2").value=r.body||"";});
+    loadReq(apiStore.collections[+el.dataset.ci].requests[+el.dataset.ri]);});
   box.querySelectorAll("[data-del]").forEach(el=>el.onclick=e=>{
     e.stopPropagation();const[ci,ri]=el.dataset.del.split(":").map(Number);
     apiStore.collections[ci].requests.splice(ri,1);saveApiStore();renderApiCollections();});
+  box.querySelectorAll("[data-delcol]").forEach(el=>el.onclick=()=>{
+    if(confirm("Delete this collection?")){apiStore.collections.splice(+el.dataset.delcol,1);
+      saveApiStore();renderApiCollections();}});
+}
+function renderApiFlows(){
+  const box=$("#apiFlows");const flows=apiStore.flows||[];
+  if(!flows.length){box.innerHTML='<span class="muted">no flows</span>';return;}
+  box.innerHTML=flows.map((f,fi)=>`<div style="margin-bottom:8px">
+    <b style="font-size:12.5px">${esc(f.name)}</b> <span class="muted">(${(f.steps||[]).length})</span>
+    <div style="margin:2px 0"><button class="btn small" data-runflow="${fi}">▶ Run</button>
+      <button class="btn small" data-expflow="${fi}">Export</button>
+      <span class="hint" data-delflow="${fi}" style="color:var(--crit);cursor:pointer">✕</span></div>
+    ${(f.steps||[]).map((s,si)=>`<div class="palItem" style="padding:2px 8px">
+      <span class="mono" style="font-size:10.5px;color:var(--s1)">${esc(s.method)}</span>
+      <span style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.name||s.url)}</span>
+      <span class="hint" data-delstep="${fi}:${si}" style="color:var(--crit)">✕</span></div>`).join("")}</div>`).join("");
+  box.querySelectorAll("[data-runflow]").forEach(b=>b.onclick=()=>runFlow(+b.dataset.runflow));
+  box.querySelectorAll("[data-expflow]").forEach(b=>b.onclick=()=>exportFlow(+b.dataset.expflow));
+  box.querySelectorAll("[data-delflow]").forEach(b=>b.onclick=()=>{
+    apiStore.flows.splice(+b.dataset.delflow,1);saveApiStore();renderApiFlows();});
+  box.querySelectorAll("[data-delstep]").forEach(b=>b.onclick=()=>{
+    const[fi,si]=b.dataset.delstep.split(":").map(Number);
+    apiStore.flows[fi].steps.splice(si,1);saveApiStore();renderApiFlows();});
 }
 function renderApiHistory(){
   const h=apiStore.history||[];
-  $("#apiHistory").innerHTML=h.length?h.slice(0,15).map(e=>`
+  $("#apiHistory").innerHTML=h.length?h.slice(0,12).map(e=>`
     <div class="palItem" data-hurl="${esc(e.url)}" data-hm="${esc(e.method)}" style="padding:3px 8px">
       <span class="mono" style="color:${e.status<400?"var(--goodtext)":"var(--crit)"}">${e.status}</span>
       <span class="mono" style="font-size:10.5px">${esc(e.method)}</span>
@@ -1725,47 +1725,206 @@ function renderApiHistory(){
 async function saveApiStore(){
   try{await api("/api/httpstore",{method:"POST",body:JSON.stringify({
     collections:apiStore.collections,environments:apiStore.environments,
-    active_env:apiStore.active_env})});}catch(e){toast(e.message,false);}
+    active_env:apiStore.active_env,flows:apiStore.flows})});}catch(e){toast(e.message,false);}
 }
 function subVars(s){
   const env=apiStore.environments[apiStore.active_env];
   if(!env||!env.vars)return s;
-  return s.replace(/\{\{(\w+)\}\}/g,(m,k)=>env.vars[k]!=null?env.vars[k]:m);
+  return (s||"").replace(/\{\{(\w+)\}\}/g,(m,k)=>env.vars[k]!=null?env.vars[k]:m);
+}
+async function sendReq(req){
+  return api("/api/http",{method:"POST",body:JSON.stringify({
+    method:req.method,url:subVars(req.url),headers:subVars(req.headers),
+    body:subVars(req.body)})});
 }
 $("#hSend2")&&($("#hSend2").onclick=async()=>{
-  const url=subVars($("#hUrl2").value.trim());if(!url)return toast("enter a URL",false);
+  if(!$("#hUrl2").value.trim())return toast("enter a URL",false);
+  $("#flowRun").style.display="none";
   $("#hResMeta2").innerHTML='<span class="muted">sending…</span>';$("#hRes2").style.display="none";
   try{
-    const r=await api("/api/http",{method:"POST",body:JSON.stringify({
-      method:$("#hMethod2").value,url,headers:subVars($("#hHeaders2").value),
-      body:subVars($("#hBody2").value)})});
+    const r=await sendReq(curReq());
     const ok=r.status<400;
     $("#hResMeta2").innerHTML=`<span class="pill" style="border-color:${ok?"var(--good)":"var(--crit)"}">${ok?"✓":"✗"} ${r.status} ${esc(r.reason||"")}</span>
       <span class="muted">${r.ms} ms · ${fmtB(r.size)}</span>
       <button class="btn small" id="hFmt2">format JSON</button>`;
     $("#hRes2").textContent=r.body||"(empty)";$("#hRes2").style.display="block";
     $("#hFmt2").onclick=()=>{try{$("#hRes2").textContent=JSON.stringify(JSON.parse(r.body),null,2);}catch(e){toast("not JSON",false);}};
-    loadApiClient();  // refresh history
+    loadApiClient();
   }catch(e){$("#hResMeta2").innerHTML="";toast(e.message,false);}
 });
+$("#hCurl2")&&($("#hCurl2").onclick=()=>{
+  const r=curReq();let c=`curl -X ${r.method} '${subVars(r.url)}'`;
+  (r.headers||"").split("\n").forEach(l=>{if(l.includes(":"))c+=` \\\n  -H '${l.trim()}'`;});
+  if(r.body)c+=` \\\n  -d '${r.body}'`;copyText(c);});
+/* pick a collection (numbered menu; blank name = new) */
+function pickCollection(){
+  const cols=apiStore.collections;
+  if(!cols.length){const n=prompt("New collection name:","My requests");
+    if(!n)return null;cols.push({name:n,requests:[]});return cols.length-1;}
+  const menu=cols.map((c,i)=>`${i+1}) ${c.name}`).join("\n");
+  const a=prompt("Save to collection — type a number, or a new name:\n"+menu,"1");
+  if(a==null)return null;
+  if(/^\d+$/.test(a.trim())&&+a>=1&&+a<=cols.length)return +a-1;
+  cols.push({name:a.trim(),requests:[]});return cols.length-1;
+}
+$("#apiNewCol")&&($("#apiNewCol").onclick=()=>{
+  const n=prompt("New collection name:");if(!n)return;
+  apiStore.collections.push({name:n,requests:[]});saveApiStore();renderApiCollections();});
 $("#apiSaveReq")&&($("#apiSaveReq").onclick=()=>{
-  const name=prompt("Save request as:");if(!name)return;
-  let col=apiStore.collections[0];
-  if(!col){col={name:"My requests",requests:[]};apiStore.collections.push(col);}
-  col.requests.push({name,method:$("#hMethod2").value,url:$("#hUrl2").value,
-    headers:$("#hHeaders2").value,body:$("#hBody2").value});
-  saveApiStore();renderApiCollections();toast("saved");
-});
-$("#apiEnvEdit")&&($("#apiEnvEdit").onclick=()=>{
-  const name=$("#apiEnv").value||prompt("New environment name:");if(!name)return;
-  const env=apiStore.environments[name]||{vars:{}};
-  const cur=Object.entries(env.vars||{}).map(([k,v])=>`${k}=${v}`).join("\n");
-  const edited=prompt(`Variables for "${name}" (one per line, key=value):`,cur);
-  if(edited==null)return;
-  const vars={};edited.split("\n").forEach(l=>{const i=l.indexOf("=");
-    if(i>0)vars[l.slice(0,i).trim()]=l.slice(i+1).trim();});
-  apiStore.environments[name]={vars};apiStore.active_env=name;
-  saveApiStore();renderApiEnv();toast("environment saved");
+  if(!$("#hUrl2").value.trim())return toast("nothing to save",false);
+  const ci=pickCollection();if(ci==null)return;
+  const name=prompt("Request name:",$("#hUrl2").value.split("/").pop()||"request");
+  if(!name)return;
+  apiStore.collections[ci].requests.push({name,...curReq()});
+  saveApiStore();renderApiCollections();toast("saved to "+apiStore.collections[ci].name);});
+$("#apiNewFlow")&&($("#apiNewFlow").onclick=()=>{
+  const n=prompt("New flow name:");if(!n)return;
+  apiStore.flows.push({name:n,steps:[]});saveApiStore();renderApiFlows();});
+$("#apiAddFlow")&&($("#apiAddFlow").onclick=()=>{
+  if(!$("#hUrl2").value.trim())return toast("nothing to add",false);
+  const flows=apiStore.flows;let fi;
+  if(!flows.length){const n=prompt("New flow name:","Flow 1");if(!n)return;
+    flows.push({name:n,steps:[]});fi=0;}
+  else{const menu=flows.map((f,i)=>`${i+1}) ${f.name}`).join("\n");
+    const a=prompt("Add to flow — number or new name:\n"+menu,"1");if(a==null)return;
+    if(/^\d+$/.test(a.trim())&&+a>=1&&+a<=flows.length)fi=+a-1;
+    else{flows.push({name:a.trim(),steps:[]});fi=flows.length-1;}}
+  const name=prompt("Step name:",$("#hUrl2").value.split("/").pop()||"step");if(!name)return;
+  flows[fi].steps.push({name,...curReq()});saveApiStore();renderApiFlows();
+  toast("added to "+flows[fi].name);});
+async function runFlow(fi){
+  const f=apiStore.flows[fi];const box=$("#flowRun");box.style.display="block";
+  box.innerHTML=`<b>Running flow: ${esc(f.name)}</b>`;
+  let pass=0;
+  for(let i=0;i<f.steps.length;i++){
+    const s=f.steps[i];
+    const line=document.createElement("div");line.className="mono";
+    line.style.cssText="font-size:12px;padding:3px 0";
+    line.innerHTML=`<span class="muted">${i+1}. ${esc(s.name||s.url)}</span> …`;
+    box.appendChild(line);
+    try{
+      const r=await sendReq(s);
+      const ok=r.status<400;if(ok)pass++;
+      line.innerHTML=`<span style="color:${ok?"var(--goodtext)":"var(--crit)"}">${ok?"✓":"✗"} ${r.status}</span>
+        <span class="mono" style="font-size:10.5px;color:var(--s1)">${esc(s.method)}</span>
+        <span style="font-size:11.5px">${esc(s.name||s.url)}</span>
+        <span class="hint">${r.ms}ms</span>`;
+    }catch(e){line.innerHTML=`<span style="color:var(--crit)">✗ error</span> ${esc(s.name||s.url)} — ${esc(e.message)}`;}
+  }
+  const done=document.createElement("div");done.style.cssText="margin-top:6px;font-weight:600";
+  done.innerHTML=`${pass}/${f.steps.length} steps passed`;
+  done.style.color=pass===f.steps.length?"var(--goodtext)":"var(--serious)";
+  box.appendChild(done);
+}
+async function exportFlow(fi){
+  const f=apiStore.flows[fi];const json=JSON.stringify(f,null,2);
+  let yaml="";try{yaml=(await api("/api/yaml",{method:"POST",
+    body:JSON.stringify({text:JSON.stringify(f),dir:"j2y"})})).text;}catch(e){}
+  $("#lbName").textContent="Flow: "+f.name;
+  $("#lbBody").innerHTML=`<div class="panel" style="width:min(760px,90vw);max-height:82vh;overflow:auto;margin:0;background:var(--surface)">
+    <div class="row"><button class="btn small" id="expJson">Copy JSON</button>
+    ${yaml?'<button class="btn small" id="expYaml">Copy YAML</button>':""}</div>
+    <pre class="mono" style="font-size:11.5px;white-space:pre-wrap">${esc(json)}</pre>
+    ${yaml?`<h2>YAML</h2><pre class="mono" style="font-size:11.5px;white-space:pre-wrap">${esc(yaml)}</pre>`:""}</div>`;
+  $("#lightbox").style.display="flex";
+  $("#expJson").onclick=()=>copyText(json);
+  if(yaml)$("#expYaml").onclick=()=>copyText(yaml);
+}
+/* ---- env manager (Postman-style vars editor) ---- */
+$("#apiEnvEdit")&&($("#apiEnvEdit").onclick=()=>openEnvEditor($("#apiEnv").value));
+function openEnvEditor(name){
+  const envs=apiStore.environments;
+  $("#lbName").textContent="Environments";
+  const opts=Object.keys(envs).map(n=>`<option ${n===name?"selected":""}>${esc(n)}</option>`).join("");
+  $("#lbBody").innerHTML=`<div class="panel" style="width:min(620px,92vw);margin:0;background:var(--surface)">
+    <div class="row"><select id="envPick" class="btn"><option value="">— pick —</option>${opts}</select>
+      <button class="btn small" id="envNew">＋ New</button>
+      <button class="btn small danger" id="envDel">Delete</button></div>
+    <div class="muted" style="font-size:12px;margin:6px 0">One <span class="mono">key=value</span> per line. Use in requests as <span class="mono">{{key}}</span>.</div>
+    <textarea id="envVars" class="tin" style="height:200px"></textarea>
+    <div class="row" style="margin:8px 0 0"><button class="btn" id="envSave">Save environment</button>
+      <span class="muted" id="envStat" style="font-size:12px"></span></div></div>`;
+  $("#lightbox").style.display="flex";
+  const load=n=>{const e=envs[n];$("#envVars").value=e?Object.entries(e.vars||{}).map(([k,v])=>`${k}=${v}`).join("\n"):"";};
+  if(name)load(name);
+  $("#envPick").onchange=()=>load($("#envPick").value);
+  $("#envNew").onclick=()=>{const n=prompt("Environment name:");if(!n)return;
+    envs[n]={vars:{}};openEnvEditor(n);};
+  $("#envDel").onclick=()=>{const n=$("#envPick").value;if(!n)return;
+    if(confirm("Delete environment "+n+"?")){delete envs[n];
+      if(apiStore.active_env===n)apiStore.active_env="";saveApiStore();renderApiEnv();$("#lbClose").click();}};
+  $("#envSave").onclick=()=>{const n=$("#envPick").value;if(!n)return toast("pick or create an env",false);
+    const vars={};$("#envVars").value.split("\n").forEach(l=>{const i=l.indexOf("=");
+      if(i>0)vars[l.slice(0,i).trim()]=l.slice(i+1).trim();});
+    envs[n]={vars};apiStore.active_env=n;saveApiStore();renderApiEnv();
+    $("#envStat").textContent="saved ✓";toast("environment saved");};
+}
+/* ---- import: Postman JSON / curl / raw HTTP / Perch flow ---- */
+$("#apiImport")&&($("#apiImport").onclick=()=>{
+  const b=$("#apiImportBox");b.style.display=b.style.display==="none"?"block":"none";});
+function parseCurl(txt){
+  const toks=txt.match(/'[^']*'|"[^"]*"|\S+/g)||[];
+  let method="GET",url="",headers=[],body="";
+  const unq=s=>s.replace(/^['"]|['"]$/g,"");
+  for(let i=0;i<toks.length;i++){
+    const t=toks[i];
+    if(t==="curl")continue;
+    if(t==="-X"||t==="--request")method=unq(toks[++i]||"GET");
+    else if(t==="-H"||t==="--header")headers.push(unq(toks[++i]||""));
+    else if(t==="-d"||t==="--data"||t==="--data-raw"||t==="--data-binary"){body=unq(toks[++i]||"");if(method==="GET")method="POST";}
+    else if(t==="-b"||t==="--cookie"||t==="-u"||t==="--user")headers.push((t.includes("cookie")?"Cookie: ":"Authorization: ")+unq(toks[++i]||""));
+    else if(t.startsWith("http"))url=unq(t);
+    else if(!t.startsWith("-")&&!url)url=unq(t);
+  }
+  return {method,url,headers:headers.join("\n"),body};
+}
+function parseRawHttp(txt){
+  const lines=txt.split(/\r?\n/);const m=(lines[0]||"").match(/^([A-Z]+)\s+(\S+)\s+HTTP/i);
+  if(!m)return null;
+  let method=m[1],path=m[2],headers=[],host="",i=1;
+  for(;i<lines.length&&lines[i].trim();i++){
+    const idx=lines[i].indexOf(":");if(idx<0)continue;
+    const k=lines[i].slice(0,idx).trim(),v=lines[i].slice(idx+1).trim();
+    if(k.toLowerCase()==="host")host=v;else headers.push(`${k}: ${v}`);}
+  const body=lines.slice(i+1).join("\n");
+  const url=/^https?:\/\//i.test(path)?path:("http://"+host+path);
+  return {method,url,headers:headers.join("\n"),body};
+}
+function postmanReq(item,prefix){
+  const rq=item.request;if(!rq)return null;
+  const url=typeof rq.url==="string"?rq.url:(rq.url&&(rq.url.raw||(rq.url.host||[]).join(".")+"/"+((rq.url.path||[]).join("/"))))||"";
+  const headers=(rq.header||[]).filter(h=>!h.disabled).map(h=>`${h.key}: ${h.value}`).join("\n");
+  return {name:(prefix?prefix+" / ":"")+(item.name||url),method:(rq.method||"GET"),
+    url,headers,body:(rq.body&&rq.body.raw)||""};
+}
+function flattenPostman(items,prefix,out){
+  for(const it of items||[]){
+    if(it.item)flattenPostman(it.item,(prefix?prefix+" / ":"")+(it.name||""),out);
+    else{const r=postmanReq(it,prefix);if(r)out.push(r);}}
+  return out;
+}
+$("#apiImportGo")&&($("#apiImportGo").onclick=()=>{
+  const txt=$("#apiImportText").value.trim();if(!txt)return;
+  try{
+    if(/^curl\b/.test(txt)){loadReq(parseCurl(txt));toast("curl imported into the builder");}
+    else if(/^[A-Z]+\s+\S+\s+HTTP/i.test(txt)){const r=parseRawHttp(txt);
+      if(!r)throw new Error("could not parse HTTP request");loadReq(r);toast("HTTP request imported");}
+    else{
+      const j=JSON.parse(txt);
+      if(j.info&&j.item){const reqs=flattenPostman(j.item,"",[]);
+        apiStore.collections.push({name:j.info.name||"Imported",requests:reqs});
+        saveApiStore();renderApiCollections();toast(`imported ${reqs.length} requests`);}
+      else if(j.values&&j.name){const vars={};
+        (j.values||[]).filter(v=>v.enabled!==false).forEach(v=>vars[v.key]=v.value);
+        apiStore.environments[j.name]={vars};apiStore.active_env=j.name;
+        saveApiStore();renderApiEnv();toast("environment imported: "+j.name);}
+      else if(j.steps&&j.name){apiStore.flows.push(j);saveApiStore();renderApiFlows();toast("flow imported: "+j.name);}
+      else if(j.requests){apiStore.collections.push({name:j.name||"Imported",requests:j.requests});
+        saveApiStore();renderApiCollections();toast("collection imported");}
+      else throw new Error("unrecognized JSON — expected Postman collection/env, or a Perch flow");
+    }
+    $("#apiImportText").value="";$("#apiImportBox").style.display="none";
+  }catch(e){toast("import failed: "+e.message,false);}
 });
 
 /* ---- kernel ---- */

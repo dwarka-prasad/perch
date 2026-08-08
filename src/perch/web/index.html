@@ -73,6 +73,9 @@
       <div class="card" data-tile="uptime"><div class="k">Uptime</div><div class="v" id="upV">–</div>
         <div class="d" id="loadD"></div><div class="d" id="npD"></div></div>
     </div>
+    <div class="panel"><h2>⚠ Needs attention <span class="muted">— recent errors from the system log</span>
+      <button class="btn small" id="critMore" style="margin-left:8px">open Logs</button></h2>
+      <div id="critLogs" class="muted" style="font-size:12px">checking…</div></div>
     <div class="panel"><h2>This laptop</h2><div id="hwGrid" class="muted">…</div></div>
   </section>
 
@@ -100,28 +103,6 @@
         <button class="btn" id="siteGo">Preview ▶</button>
         <span class="muted" id="siteStat" style="font-size:12px"></span>
       </div>
-    </div>
-    <div class="panel"><h2>HTTP request tester</h2>
-      <div class="row">
-        <select id="hMethod" class="btn"><option>GET</option><option>POST</option>
-          <option>PUT</option><option>PATCH</option><option>DELETE</option>
-          <option>HEAD</option><option>OPTIONS</option></select>
-        <input type="text" id="hUrl" placeholder="http://127.0.0.1:8080/api/health"
-          style="flex:1;min-width:280px">
-        <button class="btn" id="hSend">Send ▶</button>
-        <button class="btn small" id="hCurl">Copy as curl</button>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <textarea id="hHeaders" spellcheck="false" placeholder="Headers, one per line:&#10;Content-Type: application/json&#10;Authorization: Bearer …"
-          style="height:80px" class="tin"></textarea>
-        <textarea id="hBody" spellcheck="false" placeholder="Request body (POST/PUT/PATCH)"
-          style="height:80px" class="tin"></textarea>
-      </div>
-      <div id="hResMeta" class="row" style="margin:10px 0 6px"></div>
-      <pre id="hResHead" class="mono" style="display:none;font-size:11px;background:var(--track);
-        padding:8px;border-radius:8px;white-space:pre-wrap;max-height:140px;overflow:auto"></pre>
-      <pre id="hRes" class="mono" style="display:none;font-size:12px;background:var(--track);
-        padding:10px;border-radius:8px;white-space:pre-wrap;max-height:340px;overflow:auto"></pre>
     </div>
     <div class="panel"><h2>JSON tools</h2>
       <div class="row">
@@ -267,17 +248,28 @@
   </section>
 
   <section id="tab-api">
-    <div class="panel"><h2>API client <span class="muted">— saved requests, environments, history</span></h2>
+    <div class="panel"><h2>API client <span class="muted">— collections, environments, flows</span></h2>
       <div class="row">
-        <span class="muted" style="font-size:12px">Environment</span>
+        <span class="muted" style="font-size:12px">Env</span>
         <select id="apiEnv" class="btn"></select>
-        <button class="btn small" id="apiEnvEdit">edit vars</button>
+        <button class="btn small" id="apiEnvEdit">manage vars</button>
         <span style="flex:1"></span>
-        <button class="btn small" id="apiSaveReq">＋ Save current request</button>
+        <button class="btn small" id="apiImport">⬇ Import</button>
+        <button class="btn small" id="apiNewCol">＋ Collection</button>
+        <button class="btn small" id="apiNewFlow">＋ Flow</button>
       </div>
-      <div style="display:grid;grid-template-columns:240px 1fr;gap:14px;margin-top:6px">
+      <div id="apiImportBox" style="display:none;margin-top:8px">
+        <textarea id="apiImportText" class="tin" style="height:110px"
+          placeholder="Paste a Postman collection/environment JSON, a curl command, or a raw HTTP request…"></textarea>
+        <div class="row" style="margin:6px 0 0"><button class="btn small" id="apiImportGo">Import</button>
+          <span class="muted" id="apiImportHint" style="font-size:12px">auto-detects Postman JSON · curl · raw HTTP · Perch flow</span></div>
+      </div>
+      <div style="display:grid;grid-template-columns:250px 1fr;gap:14px;margin-top:10px">
         <div>
+          <h2 style="margin:0 0 4px">Collections</h2>
           <div id="apiCollections" class="muted" style="font-size:12.5px">no saved requests</div>
+          <h2 style="margin:14px 0 4px">Flows</h2>
+          <div id="apiFlows" class="muted" style="font-size:12.5px">no flows</div>
           <h2 style="margin:14px 0 4px">History</h2>
           <div id="apiHistory" class="muted" style="font-size:11.5px">—</div>
         </div>
@@ -293,8 +285,14 @@
             <textarea id="hHeaders2" class="tin" style="height:70px" placeholder="Header: value (one per line)"></textarea>
             <textarea id="hBody2" class="tin" style="height:70px" placeholder="request body"></textarea>
           </div>
+          <div class="row" style="margin:6px 0 0">
+            <button class="btn small" id="apiSaveReq">💾 Save to collection</button>
+            <button class="btn small" id="apiAddFlow">＋ Add to flow</button>
+            <button class="btn small" id="hCurl2">Copy as curl</button>
+          </div>
           <div id="hResMeta2" class="row" style="margin:8px 0 4px"></div>
-          <pre id="hRes2" class="mono" style="display:none;font-size:12px;background:var(--track);padding:10px;border-radius:8px;white-space:pre-wrap;max-height:300px;overflow:auto"></pre>
+          <pre id="hRes2" class="mono" style="display:none;font-size:12px;background:var(--track);padding:10px;border-radius:8px;white-space:pre-wrap;max-height:280px;overflow:auto"></pre>
+          <div id="flowRun" style="display:none;margin-top:10px"></div>
         </div>
       </div>
     </div>

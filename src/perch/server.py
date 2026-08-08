@@ -1285,6 +1285,7 @@ def _http_store():
     s.setdefault("environments", {})
     s.setdefault("active_env", "")
     s.setdefault("history", [])
+    s.setdefault("flows", [])
     return s
 
 
@@ -1295,7 +1296,7 @@ def http_store_get():
 def http_store_save(body):
     os.makedirs(CFG_DIR, exist_ok=True)
     s = _http_store()
-    for k in ("collections", "environments", "active_env"):
+    for k in ("collections", "environments", "active_env", "flows"):
         if k in body:
             s[k] = body[k]
     with open(_http_file(), "w") as f:

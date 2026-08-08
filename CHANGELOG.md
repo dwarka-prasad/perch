@@ -1,6 +1,17 @@
 # Changelog
 
-## 1.0.0
+## 1.0.0 — final
+
+Adds a full **API client** (collections, environments with `{{vars}}`, request
+history, **flows** you can run and export to JSON/YAML, and **import** from
+Postman collections/environments, `curl`, or raw HTTP), a **pluggable LLM
+provider** (local Claude CLI / Anthropic API / OpenAI-compatible / Ollama) for
+the AI tab and health report, universal **runtime/version switching** via
+rustup and `update-alternatives`, and a **critical-log panel** on the Overview
+that surfaces recent system errors needing attention. The standalone HTTP
+tester was folded into the API client.
+
+### Details
 
 First release. Restructured from a single-file prototype into an installable
 package with Docker and `.deb` distribution.
