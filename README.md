@@ -141,8 +141,8 @@ dashboard aimed at non-technical users.
 
 ```bash
 git clone https://github.com/dwarka-prasad/perch && cd perch
-make deb                                  # builds dist/perch_1.2.2_all.deb
-sudo apt install ./dist/perch_1.2.2_all.deb
+make deb                                  # builds dist/perch_1.2.3_all.deb
+sudo apt install ./dist/perch_1.2.3_all.deb
 ```
 
 Then launch **Perch** from your app menu, or:

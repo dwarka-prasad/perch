@@ -967,19 +967,6 @@ def devinfo():
     return {"tools": tools, "git": git_id}
 
 
-def open_terminal(path):
-    path = os.path.realpath(path)
-    if not os.path.isdir(path):
-        path = os.path.dirname(path)
-    if shutil.which("gnome-terminal"):
-        subprocess.Popen(["gnome-terminal", f"--working-directory={path}"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    else:
-        subprocess.Popen(["x-terminal-emulator"], cwd=path,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return path
-
-
 def open_editor(path):
     path = os.path.realpath(path)
     for ed in ("code", "subl", "gedit"):
@@ -1637,20 +1624,6 @@ def docker_prune(kind):
         return start_job(["docker", "system", "prune", "-f"],
                          "Prune stopped containers, networks, dangling images")
     raise ValueError("bad prune kind")
-
-
-def docker_exec_terminal(cid):
-    if not re.fullmatch(r"[0-9a-f]{4,64}", cid):
-        raise ValueError("bad container id")
-    if shutil.which("gnome-terminal"):
-        subprocess.Popen(["gnome-terminal", "--", "bash", "-c",
-                          f"docker exec -it {cid} sh; exec bash"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    else:
-        subprocess.Popen(["x-terminal-emulator", "-e",
-                          f"docker exec -it {cid} sh"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return cid
 
 
 # --------------------------------------------------------------- monitor -----
@@ -3524,16 +3497,27 @@ def _ws_recv(sock):
     return opcode, data
 
 
-def _pty_session(sock):
+def _pty_session(sock, cwd=None, cmd=None):
     """Bridge a websocket to a fresh login shell in a pty until either side
-    closes. Client protocol: 'i<data>' keyboard input, 'r{cols,rows}' resize."""
+    closes. Client protocol: 'i<data>' keyboard input, 'r{cols,rows}' resize.
+    Optional cwd starts the shell in that directory; optional cmd is typed as
+    the first line (used to `cd` here / `docker exec` into a container)."""
     shell = os.environ.get("SHELL") or pwd.getpwuid(os.getuid()).pw_shell \
         or "/bin/bash"
+    start = HOME
+    if cwd:
+        start = cwd if os.path.isdir(cwd) else (
+            os.path.dirname(cwd) if os.path.isfile(cwd) else HOME)
     pid, fd = _pty.fork()
     if pid == 0:  # child
-        os.chdir(HOME)
+        try:
+            os.chdir(start)
+        except OSError:
+            os.chdir(HOME)
         env = {**os.environ, "TERM": "xterm-256color"}
         os.execve(shell, [shell, "-l"], env)
+    if cmd:  # run an initial command in the freshly-started shell
+        os.write(fd, (cmd + "\n").encode())
     try:
         while True:
             r, _, _ = select.select([fd, sock], [], [], 30)
@@ -3692,8 +3676,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Sec-WebSocket-Accept", _ws_accept(key))
             self.end_headers()
             self.close_connection = True
+            cwd = qs.get("cwd", [""])[0] or None
+            if cwd:
+                cwd = os.path.realpath(cwd)
+                if not (cwd == HOME or cwd.startswith(HOME + os.sep)
+                        or os.path.isdir(cwd)):
+                    cwd = None
+            cmd = None
+            if qs.get("cmd", [""])[0]:
+                try:
+                    cmd = base64.b64decode(qs["cmd"][0]).decode()[:2000]
+                except (ValueError, UnicodeDecodeError):
+                    cmd = None
             try:
-                _pty_session(self.connection)
+                _pty_session(self.connection, cwd=cwd, cmd=cmd)
             except (OSError, ConnectionError):
                 pass
             return
@@ -3842,8 +3838,6 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/serviceaction":
                 service_action(body["name"], body["action"])
                 return self._json({"ok": True})
-            if route == "/api/terminal":
-                return self._json({"ok": True, "path": open_terminal(body["path"])})
             if route == "/api/editor":
                 return self._json({"ok": True, "editor": open_editor(body["path"])})
             if route == "/api/writefile":
@@ -3958,9 +3952,6 @@ class Handler(BaseHTTPRequestHandler):
                                                         body["action"]))
             if route == "/api/dockerprune":
                 return self._json(docker_prune(body["kind"]))
-            if route == "/api/dockerexec":
-                return self._json({"ok": True,
-                                   "id": docker_exec_terminal(body["id"])})
             if route == "/api/health":
                 return self._json(health_report())
             return self._err("not found", 404)

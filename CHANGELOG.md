@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.3
+
+- **"Open terminal / shell" now uses Perch's own terminal** — the *Terminal
+  here* buttons (Files, file rows, open-with menu), the Git repo *Terminal*
+  button, and the Docker container *Shell* button no longer launch an external
+  emulator (gnome-terminal / x-terminal-emulator). They open a new tab in the
+  built-in web terminal, starting in the right folder or running
+  `docker exec` into the container. Works headless and over the network, and
+  the external-terminal dependency is gone.
+
 ## 1.2.2
 
 - **Fix: terminal Fullscreen crash** — the button no longer calls the native

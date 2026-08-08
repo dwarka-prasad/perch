@@ -798,9 +798,8 @@ async function openWithMenu(ev,path,kind){
       body:JSON.stringify({app:el.dataset.app,path})});toast("opened in "+res.app);}
     catch(e){toast(e.message,false);}});
   const th=menu.querySelector("[data-term-here]");
-  if(th)th.onclick=async()=>{menu.remove();
-    try{await api("/api/terminal",{method:"POST",body:JSON.stringify({path})});
-      toast("terminal opened");}catch(e){toast(e.message,false);}};
+  if(th)th.onclick=()=>{menu.remove();
+    openInTerminal({cwd:path,name:(path.split("/").pop()||"shell")});};
   const wp=menu.querySelector("[data-wallpaper]");
   if(wp)wp.onclick=async()=>{menu.remove();
     try{await api("/api/setsetting",{method:"POST",
@@ -1053,10 +1052,9 @@ async function loadFiles(path){
       try{const r=await api("/api/editor",{method:"POST",
         body:JSON.stringify({path:b.dataset.edit})});toast("opened in "+r.editor);}
       catch(e){toast(e.message,false);}});
-    $("#ftable").querySelectorAll("[data-term]").forEach(b=>b.onclick=async()=>{
-      try{await api("/api/terminal",{method:"POST",
-        body:JSON.stringify({path:b.dataset.term})});toast("terminal opened");}
-      catch(e){toast(e.message,false);}});
+    $("#ftable").querySelectorAll("[data-term]").forEach(b=>b.onclick=()=>
+      openInTerminal({cwd:b.dataset.term,
+        name:(b.dataset.term.split("/").pop()||"shell")}));
     $("#ftable").querySelectorAll("[data-pv]").forEach(b=>b.onclick=()=>
       showPreview(b.dataset.pvp,b.dataset.pv));
     $("#ftable").querySelectorAll("[data-openwith]").forEach(b=>b.onclick=e=>
@@ -1098,9 +1096,8 @@ $("#bulkTrash").onclick=async()=>{
     loadFiles(fPath);
   }catch(e){toast(e.message,false);}
 };
-$("#termHere").onclick=async()=>{
-  try{await api("/api/terminal",{method:"POST",body:JSON.stringify({path:fPath})});
-    toast("terminal opened");}catch(e){toast(e.message,false);}};
+$("#termHere").onclick=()=>
+  openInTerminal({cwd:fPath,name:(fPath.split("/").pop()||"shell")});
 $("#codeHere").onclick=async()=>{
   try{const r=await api("/api/editor",{method:"POST",body:JSON.stringify({path:fPath})});
     toast("opened in "+r.editor);}catch(e){toast(e.message,false);}};
@@ -1117,7 +1114,7 @@ function _paneFit(p){try{p.fit.fit();
 }catch(e){}}
 function _fitAll(){const t=curTab();if(t)_leaves(t.layout).forEach(_paneFit);}
 
-function makePane(){
+function makePane(opts){
   const id=++_paneSeq;
   const el=document.createElement("div");el.className="term-pane";
   const host=document.createElement("div");host.className="xt";el.appendChild(host);
@@ -1125,7 +1122,7 @@ function makePane(){
     fontFamily:"ui-monospace,Menlo,'Cascadia Code',monospace",
     cursorBlink:true,scrollback:5000,theme:{background:"#000000"}});
   const fit=new FitAddon.FitAddon();term.loadAddon(fit);term.open(host);
-  const p={id,el,host,term,fit,ws:null,ro:null,name:"shell"};
+  const p={id,el,host,term,fit,ws:null,ro:null,name:"shell",opts:opts||null};
   term.onData(d=>p.ws&&p.ws.readyState===1&&p.ws.send("i"+d));
   term.onTitleChange(t=>{p.name=t||"shell";renderTabs();});
   term.attachCustomKeyEventHandler(e=>{
@@ -1144,7 +1141,12 @@ function makePane(){
 }
 function connectPane(p){
   const proto=location.protocol==="https:"?"wss:":"ws:";
-  p.ws=new WebSocket(`${proto}//${location.host}/ws/term`);
+  let url=`${proto}//${location.host}/ws/term`;
+  const q=[];
+  if(p.opts&&p.opts.cwd)q.push("cwd="+encodeURIComponent(p.opts.cwd));
+  if(p.opts&&p.opts.cmd)q.push("cmd="+encodeURIComponent(btoa(p.opts.cmd)));
+  if(q.length)url+="?"+q.join("&");
+  p.ws=new WebSocket(url);
   p.ws.binaryType="arraybuffer";
   p.ws.onopen=()=>{_paneFit(p);};
   p.ws.onmessage=e=>p.term.write(typeof e.data==="string"?e.data:
@@ -1218,9 +1220,10 @@ function setActivePane(p){
   t.title=p.name;renderTabs();
   try{p.term.focus();}catch(e){}
 }
-function newTab(){
-  const p=makePane();
-  const t={id:++_paneSeq,layout:{leaf:true,pane:p},active:p,title:"shell"};
+function newTab(opts){
+  const p=makePane(opts);
+  const t={id:++_paneSeq,layout:{leaf:true,pane:p},active:p,
+    title:(opts&&opts.name)||"shell"};
   TERMTABS.push(t);TERM_ACTIVE=t.id;renderTabs();renderStage();
 }
 function activateTab(id){TERM_ACTIVE=id;renderTabs();renderStage();}
@@ -1261,6 +1264,7 @@ function toggleFull(){
   const btn=$("#termFull");if(btn)btn.textContent=on?"⛶ Exit":"⛶ Fullscreen";
   setTimeout(_fitAll,80);
 }
+let _pendingTermOpts=null;
 function openTerminal(){
   if(!_termInit){
     _termInit=true;
@@ -1271,9 +1275,14 @@ function openTerminal(){
     $("#termFontDn").onclick=()=>fontZoom(-1);
     $("#termClose").onclick=()=>closePane();
     $("#termFull").onclick=()=>toggleFull();
-    newTab();
+    newTab(_pendingTermOpts||undefined);_pendingTermOpts=null;
+  }else if(_pendingTermOpts){
+    newTab(_pendingTermOpts);_pendingTermOpts=null;
   }else{renderStage();}
 }
+// Open Perch's own terminal (a new tab) in a folder or running a command,
+// instead of launching an external terminal emulator.
+function openInTerminal(opts){_pendingTermOpts=opts;goTab("term");}
 
 /* ---- scheduled tasks: crontab + systemd timers ---- */
 let schedLoaded=false;
@@ -1398,7 +1407,7 @@ function applyCaps(){
   const hide=(sel,ok)=>document.querySelectorAll(sel).forEach(el=>
     el.style.display=ok?"":"none");
   hide(".cap-edit,#codeHere",!!CAPS.editor);
-  hide(".cap-term,#termHere",CAPS.terminal);
+  hide(".cap-term,#termHere",true);   // built-in web terminal is always available
   hide(".cap-open",CAPS.opener);
   hide(".cap-gnome",CAPS.gnome!==false);
   hide(".cap-snap",CAPS.snap!==false);
@@ -1505,10 +1514,9 @@ function hookRowActions(root){
     try{const r=await api("/api/editor",{method:"POST",
       body:JSON.stringify({path:b.dataset.edit})});toast("opened in "+r.editor);}
     catch(e){toast(e.message,false);}});
-  root.querySelectorAll("[data-term]").forEach(b=>b.onclick=async()=>{
-    try{await api("/api/terminal",{method:"POST",
-      body:JSON.stringify({path:b.dataset.term})});toast("terminal opened");}
-    catch(e){toast(e.message,false);}});
+  root.querySelectorAll("[data-term]").forEach(b=>b.onclick=()=>
+    openInTerminal({cwd:b.dataset.term,
+      name:(b.dataset.term.split("/").pop()||"shell")}));
 }
 function gotoFiles(p){
   document.querySelector('nav button[data-tab="files"]').onclick();
@@ -1613,10 +1621,9 @@ async function loadDocker(){
         const pre=$("#dockerLogs");pre.style.display="block";
         pre.textContent=r.logs||"(no output)";pre.scrollTop=pre.scrollHeight;}
       catch(e){toast(e.message,false);}});
-    document.querySelectorAll("[data-dkexec]").forEach(b=>b.onclick=async()=>{
-      try{await api("/api/dockerexec",{method:"POST",
-        body:JSON.stringify({id:b.dataset.dkexec})});
-        toast("opening shell in a terminal…");}catch(e){toast(e.message,false);}});
+    document.querySelectorAll("[data-dkexec]").forEach(b=>b.onclick=()=>
+      openInTerminal({name:"docker",
+        cmd:`docker exec -it ${b.dataset.dkexec} sh -c 'exec bash 2>/dev/null || exec sh'`}));
   }catch(e){$("#dockerBody").innerHTML=`<span class="muted">${esc(e.message)}</span>`;}
 }
 async function loadServices(){
@@ -2148,9 +2155,9 @@ async function loadGit(){
             {path:b.dataset.runp,kind:sb.dataset.rk,name:sb.dataset.rn})})));
       }catch(e){box.innerHTML='<span class="muted">'+esc(e.message)+'</span>';}
     });
-    document.querySelectorAll("[data-gitterm]").forEach(b=>b.onclick=async()=>{
-      try{await api("/api/terminal",{method:"POST",body:JSON.stringify({path:b.dataset.gitterm})});
-        toast("terminal opened");}catch(e){toast(e.message,false);}});
+    document.querySelectorAll("[data-gitterm]").forEach(b=>b.onclick=()=>
+      openInTerminal({cwd:b.dataset.gitterm,
+        name:(b.dataset.gitterm.split("/").pop()||"repo")}));
   }catch(e){$("#gitStat").textContent="";toast(e.message,false);}
 }
 $("#gitReload")&&($("#gitReload").onclick=loadGit);
