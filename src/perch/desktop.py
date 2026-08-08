@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 
-PORT = int(os.environ.get("PERCH_PORT", 8090))
+PORT = int(os.environ.get("PERCH_PORT", 9080))
 HOME = os.path.expanduser("~")
 TOKEN_FILE = os.path.join(HOME, ".perch-token")
 ICON = "perch"

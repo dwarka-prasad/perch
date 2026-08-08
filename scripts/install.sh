@@ -13,7 +13,7 @@ mkdir -p ~/.config/systemd/user \
 
 cat > ~/.config/systemd/user/perch.service <<EOF
 [Unit]
-Description=Perch dashboard (http://127.0.0.1:8090)
+Description=Perch dashboard (http://127.0.0.1:9080)
 
 [Service]
 Environment=PYTHONPATH=$SRC

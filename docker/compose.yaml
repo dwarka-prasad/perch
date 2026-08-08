@@ -17,7 +17,7 @@ services:
     pid: host
     environment:
       PERCH_HOST: 127.0.0.1
-      PERCH_PORT: 8090
+      PERCH_PORT: 9080
     volumes:
       - perch-state:/root/.cache/perch
       - /var/run/docker.sock:/var/run/docker.sock:ro   # optional: Docker tab

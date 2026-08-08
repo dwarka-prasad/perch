@@ -21,7 +21,7 @@ is plain HTML/CSS/JS with no build step or framework.
 ## Running from source
 
 ```bash
-make run       # server at http://127.0.0.1:8090 (token printed at startup)
+make run       # server at http://127.0.0.1:9080 (token printed at startup)
 make desktop   # native window
 ```
 

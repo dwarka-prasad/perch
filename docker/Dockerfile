@@ -13,8 +13,8 @@ COPY src ./src
 RUN pip install --no-cache-dir ".[office]"
 
 ENV PERCH_HOST=0.0.0.0 \
-    PERCH_PORT=8090
-EXPOSE 8090
+    PERCH_PORT=9080
+EXPOSE 9080
 
 # Token is created on first run and printed to the logs.
 CMD ["python", "-m", "perch"]

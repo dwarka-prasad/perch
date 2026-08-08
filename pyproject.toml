@@ -27,8 +27,8 @@ office = ["python-docx>=1.0", "openpyxl>=3.1"]
 desktop = ["PyGObject>=3.42"]
 
 [project.urls]
-Homepage = "https://github.com/your-org/perch"
-Issues = "https://github.com/your-org/perch/issues"
+Homepage = "https://github.com/dwarka-prasad/perch"
+Issues = "https://github.com/dwarka-prasad/perch/issues"
 
 [project.scripts]
 perch = "perch.server:main"

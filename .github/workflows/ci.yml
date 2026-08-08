@@ -54,9 +54,9 @@ jobs:
         run: docker build -f docker/Dockerfile -t perch:ci .
       - name: Smoke test
         run: |
-          docker run -d --name perch -e PERCH_HOST=0.0.0.0 -p 8090:8090 perch:ci
+          docker run -d --name perch -e PERCH_HOST=0.0.0.0 -p 9080:9080 perch:ci
           for i in $(seq 1 20); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8090/ || true)
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9080/ || true)
             [ "$code" = "403" ] && echo "server up (403 without token, as expected)" && exit 0
             sleep 1
           done

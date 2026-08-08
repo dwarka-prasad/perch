@@ -1,6 +1,6 @@
 [Unit]
-Description=Perch dashboard (http://127.0.0.1:8090)
-Documentation=https://github.com/your-org/perch
+Description=Perch dashboard (http://127.0.0.1:9080)
+Documentation=https://github.com/dwarka-prasad/perch
 
 [Service]
 ExecStart=/usr/bin/perch
