@@ -1253,12 +1253,27 @@ function fontZoom(d){
 }
 function toggleFull(){
   const card=$("#termCard");
-  if(document.fullscreenElement){document.exitFullscreen();return;}
-  if(card.requestFullscreen)card.requestFullscreen().catch(()=>card.classList.toggle("fs"));
-  else card.classList.toggle("fs");
-  setTimeout(_fitAll,60);
+  // in-app maximize is the reliable path (fills the window, sizes correctly);
+  // also request real OS fullscreen when the engine supports it.
+  const on=card.classList.toggle("fs");
+  const btn=$("#termFull");if(btn)btn.textContent=on?"⛶ Exit":"⛶ Fullscreen";
+  try{
+    if(on){const req=card.requestFullscreen||card.webkitRequestFullscreen;
+      if(req){const p=req.call(card);if(p&&p.catch)p.catch(()=>{});}}
+    else{const ex=document.exitFullscreen||document.webkitExitFullscreen;
+      if((document.fullscreenElement||document.webkitFullscreenElement)&&ex)ex.call(document);}
+  }catch(e){}
+  setTimeout(_fitAll,80);
 }
-document.addEventListener("fullscreenchange",()=>setTimeout(_fitAll,60));
+document.addEventListener("fullscreenchange",()=>{
+  // Esc out of OS fullscreen → also drop the in-app maximize + refit
+  if(!document.fullscreenElement){
+    const card=$("#termCard");
+    if(card&&card.classList.contains("fs")){card.classList.remove("fs");
+      const btn=$("#termFull");if(btn)btn.textContent="⛶ Fullscreen";}
+  }
+  setTimeout(_fitAll,60);
+});
 function openTerminal(){
   if(!_termInit){
     _termInit=true;

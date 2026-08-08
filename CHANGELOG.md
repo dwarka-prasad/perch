@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: terminal Fullscreen button** — now reliably fills the window (an
+  in-app maximize) instead of depending only on the native Fullscreen API,
+  which could silently fail or leave the terminal small inside a black screen.
+  Panes stretch to fill via a flex stage; OS fullscreen is still used when the
+  browser supports it, and Esc restores the normal view.
+
 ## 1.2.0
 
 - **Terminal: tabs, splits & fullscreen** — the Terminal tab is now a

@@ -273,8 +273,9 @@ code{background:var(--track);padding:2px 6px;border-radius:6px;
 .term-tab .tname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .term-tab .tx{opacity:.7;font-weight:700}
 .term-tab .tx:hover{opacity:1}
-#termStage{flex:1;min-height:0;border-radius:10px;overflow:hidden;
+#termStage{flex:1;min-height:0;display:flex;border-radius:10px;overflow:hidden;
   background:#000;border:1px solid var(--border)}
+#termStage>*{flex:1 1 auto;min-width:0;min-height:0}
 .term-layout{display:flex;width:100%;height:100%}
 .term-layout.col{flex-direction:column}
 .term-pane{position:relative;min-width:40px;min-height:40px;overflow:hidden;
@@ -287,8 +288,12 @@ code{background:var(--track);padding:2px 6px;border-radius:6px;
 .term-gutter.col{height:6px;cursor:row-resize}
 .term-gutter:hover{background:var(--s1)}
 .term-hint{font-size:11px;margin-top:6px}
-.term-card.fs{position:fixed;inset:0;z-index:30;height:100vh;border-radius:0;
-  margin:0;padding:12px}
+.term-card.fs{position:fixed;inset:0;z-index:40;height:100vh;width:100vw;
+  border-radius:0;margin:0;padding:12px;background:var(--page)}
+/* native OS fullscreen: override the default 74vh so it truly fills */
+.term-card:fullscreen,.term-card:-webkit-full-screen{
+  height:100vh;width:100vw;border-radius:0;margin:0;padding:12px;
+  background:var(--page)}
 :root.reduce-fx .term-tab.on{box-shadow:none}
 
 /* Reduce effects — no blur/gradient/glow/animation for low-powered machines.
