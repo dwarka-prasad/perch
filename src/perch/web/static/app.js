@@ -53,8 +53,11 @@ function goTab(name){
 }
 
 const startTab=location.hash.replace("#","");
-if(startTab){const b=document.querySelector(`nav button[data-tab="${CSS.escape(startTab)}"]`);
-  if(b)b.onclick();}
+// deferred so every `let` (fPath, duPath, …) is initialized before a deep-link
+// handler runs, avoiding a temporal-dead-zone error
+if(startTab)setTimeout(()=>{
+  const b=document.querySelector(`nav button[data-tab="${CSS.escape(startTab)}"]`);
+  if(b)b.onclick();},0);
 
 /* ---- sparklines ---- */
 function spark(svg,series,max){
@@ -522,7 +525,7 @@ async function loadStorage(){
   if(mb)mb.onclick=()=>{showSmall=!showSmall;loadStorage();};
   renderCrumbs($("#duCrumbs"),duPath,duNav);
 }
-let duPath="__HOME__";
+let duPath=HOME_DIR;
 function duNav(p){duPath=p;renderCrumbs($("#duCrumbs"),duPath,duNav);}
 function renderCrumbs(el,path,onNav){
   const parts=path.split("/").filter(Boolean);
@@ -605,7 +608,7 @@ async function loadUsers(){
 }
 
 /* ---- files ---- */
-let fPath="__HOME__";
+let fPath=HOME_DIR;
 $("#showHidden").onchange=()=>loadFiles(fPath);
 async function loadFiles(path){
   try{
@@ -1359,7 +1362,7 @@ async function loadKernel(){
 }
 
 /* ---- drawer: note + sketch ---- */
-const drawer=$("#drawer");let dMode="note",dFolder="__HOME__",dPath=null;
+const drawer=$("#drawer");let dMode="note",dFolder=HOME_DIR,dPath=null;
 function openDrawer(mode,folder,path,content){
   dMode=mode;dFolder=folder;dPath=path||null;
   $("#dFolder").value=folder;
