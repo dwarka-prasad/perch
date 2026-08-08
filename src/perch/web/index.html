@@ -30,6 +30,7 @@
   <button data-tab="term">🖥️ Terminal</button>
   <button data-tab="net">🌐 Network</button>
   <button data-tab="dev">🧰 Dev</button>
+  <button data-tab="db">🗄️ Database</button>
   <button data-tab="git">🔀 Git</button>
   <button data-tab="api">📮 API client</button>
   <button data-tab="runtimes">📚 Runtimes</button>
@@ -235,6 +236,35 @@
         <span class="spacer" style="flex:1"></span>
         <button class="btn small" id="termReset">↻ New session</button></div>
       <div id="termHost" style="height:70vh;background:#000;border-radius:8px;padding:6px"></div>
+    </div>
+  </section>
+
+  <section id="tab-db">
+    <div class="panel"><h2>Database browser <span class="muted">— SQLite &amp; PostgreSQL, read-only by default</span></h2>
+      <div class="row">
+        <div class="seg" id="dbEngine">
+          <button data-eng="sqlite" class="on">SQLite</button>
+          <button data-eng="postgres">PostgreSQL</button></div>
+      </div>
+      <div class="row dbf" data-for="sqlite"><span style="width:110px">DB file</span>
+        <input type="text" id="dbPath" class="mono" style="flex:1;min-width:260px"
+          placeholder="~/app.db or /path/to/data.sqlite"></div>
+      <div class="row dbf" data-for="postgres" style="display:none"><span style="width:110px">Container</span>
+        <select id="dbContainer" class="btn"><option value="">— host psql —</option></select>
+        <span class="muted" style="font-size:12px">or leave as host and give a connection string</span></div>
+      <div class="row dbf" data-for="postgres" style="display:none"><span style="width:110px">Connection</span>
+        <input type="text" id="dbConn" class="mono" style="flex:1;min-width:260px"
+          placeholder="postgresql://user:pass@localhost:5432/dbname"></div>
+      <div class="row" style="align-items:flex-start">
+        <span style="width:110px">SQL</span>
+        <textarea id="dbSql" class="mono" rows="3" style="flex:1;min-width:260px"
+          placeholder="SELECT * FROM ...">SELECT name FROM sqlite_master WHERE type='table';</textarea></div>
+      <div class="row" style="margin-bottom:0"><span style="width:110px"></span>
+        <button class="btn" id="dbRun">▶ Run</button>
+        <label class="pill"><input type="checkbox" id="dbWrite"> allow writes</label>
+        <span class="muted" id="dbStat" style="font-size:12px"></span></div>
+      <div id="dbTables" style="margin-top:10px"></div>
+      <div style="overflow:auto;max-height:52vh;margin-top:8px"><table id="dbResult"></table></div>
     </div>
   </section>
 

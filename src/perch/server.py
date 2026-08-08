@@ -2968,6 +2968,97 @@ def maintenance_set(enabled):
     return maintenance_get()
 
 
+# ----------------------------------------------------------- db browser ------
+# SQLite via the stdlib; Postgres via psql (host or `docker exec` into a
+# running container). Read-only by default: only SELECT/PRAGMA/EXPLAIN/WITH
+# statements run unless the request explicitly allows writes.
+
+_READ_ONLY_SQL = re.compile(r"^\s*(select|pragma|explain|with|show|\\d)",
+                            re.IGNORECASE)
+
+
+def _guard_sql(sql, allow_write):
+    if not sql.strip():
+        raise ValueError("empty query")
+    if not allow_write and not _READ_ONLY_SQL.match(sql):
+        raise ValueError("read-only: only SELECT/PRAGMA/EXPLAIN/WITH allowed "
+                         "(enable writes to run this)")
+
+
+def _sqlite_tables(conn):
+    cur = conn.execute("SELECT name FROM sqlite_master WHERE type IN "
+                       "('table','view') ORDER BY name")
+    return [r[0] for r in cur.fetchall()]
+
+
+def sqlite_query(path, sql, allow_write=False, limit=500):
+    import sqlite3
+    path = os.path.realpath(os.path.expanduser(path))
+    if not os.path.isfile(path):
+        raise ValueError("no such database file")
+    _guard_sql(sql, allow_write)
+    mode = "ro" if not allow_write else "rw"
+    uri = "file:" + urllib.parse.quote(path) + f"?mode={mode}"
+    conn = sqlite3.connect(uri, uri=True, timeout=5)
+    try:
+        cur = conn.execute(sql)
+        cols = [d[0] for d in cur.description] if cur.description else []
+        rows = [list(r) for r in cur.fetchmany(limit)] if cols else []
+        if allow_write:
+            conn.commit()
+        return {"columns": cols, "rows": rows,
+                "tables": _sqlite_tables(conn),
+                "rowcount": cur.rowcount if not cols else len(rows)}
+    finally:
+        conn.close()
+
+
+def _psql_argv(conn_str, container):
+    if container:
+        if not re.fullmatch(r"[a-zA-Z0-9][\w.-]{0,80}", container):
+            raise ValueError("bad container name")
+        return ["docker", "exec", "-i", container, "psql", conn_str]
+    return ["psql", conn_str]
+
+
+def pg_query(conn_str, sql, container="", allow_write=False, limit=500):
+    if not shutil.which("docker" if container else "psql"):
+        raise ValueError("psql not available"
+                         + (" and no docker" if container else ""))
+    _guard_sql(sql, allow_write)
+    # cap read-only result sets that don't already carry their own LIMIT
+    wrapped = f"SELECT * FROM (\n{sql}\n) AS q LIMIT {int(limit)}" \
+        if _READ_ONLY_SQL.match(sql) and "limit" not in sql.lower() else sql
+    # -A unaligned output, -F tab field separator, footer off
+    r = _run(_psql_argv(conn_str, container)
+             + ["-A", "-F", "\t", "-P", "footer=off", "-c", wrapped],
+             capture_output=True, text=True, timeout=20,
+             env={**os.environ, "PGCONNECT_TIMEOUT": "5"})
+    if r.returncode != 0:
+        raise ValueError((r.stderr.strip() or "query failed")[:300])
+    lines = r.stdout.splitlines()
+    if not lines:
+        return {"columns": [], "rows": [], "rowcount": 0}
+    cols = lines[0].split("\t")
+    rows = [ln.split("\t") for ln in lines[1:]]
+    return {"columns": cols, "rows": rows, "rowcount": len(rows)}
+
+
+def pg_containers():
+    """Running containers whose image looks like Postgres — for a quick picker."""
+    if not shutil.which("docker"):
+        return []
+    r = _run(["docker", "ps", "--format", "{{.Names}}\t{{.Image}}"],
+             capture_output=True, text=True)
+    out = []
+    for line in r.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 2 and ("postgres" in parts[1].lower()
+                                or "postgis" in parts[1].lower()):
+            out.append({"name": parts[0], "image": parts[1]})
+    return out
+
+
 def slideshow_set(cfg):
     os.makedirs(CFG_DIR, exist_ok=True)
     cur = _slide_cfg()
@@ -3502,6 +3593,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(backup_get())
             if route == "/api/maintenance":
                 return self._json(maintenance_get())
+            if route == "/api/pgcontainers":
+                return self._json({"containers": pg_containers()})
             if route == "/api/updates":
                 return self._json(pkg_updates(qs.get("force", ["0"])[0] == "1"))
             if route == "/api/procinfo":
@@ -3656,6 +3749,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(backup_run())
             if route == "/api/maintenance":
                 return self._json(maintenance_set(bool(body.get("enabled"))))
+            if route == "/api/dbquery":
+                engine = body.get("engine")
+                if engine == "sqlite":
+                    return self._json(sqlite_query(
+                        body.get("path", ""), body.get("sql", ""),
+                        bool(body.get("write"))))
+                if engine == "postgres":
+                    return self._json(pg_query(
+                        body.get("conn", ""), body.get("sql", ""),
+                        body.get("container", ""), bool(body.get("write"))))
+                return self._err("unknown engine")
             if route == "/api/openwith":
                 return self._json({"ok": True,
                                    "app": open_with(body["app"], body["path"])})

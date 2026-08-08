@@ -46,7 +46,7 @@ document.querySelectorAll("nav button[data-tab]").forEach(b=>b.onclick=()=>{
     ai:()=>$("#aiIn").focus(),monitor:loadMonitor,
     updates:loadUpdates,packages:()=>$("#pkgQ").focus(),
     settings:loadSettings,runtimes:loadRuntimes,term:openTerminal,
-    git:loadGit,api:loadApiClient}[b.dataset.tab]||(()=>{}))();
+    db:loadDb,git:loadGit,api:loadApiClient}[b.dataset.tab]||(()=>{}))();
 });
 function goTab(name){
   const b=document.querySelector(`nav button[data-tab="${CSS.escape(name)}"]`);
@@ -1111,8 +1111,53 @@ function sendResize(){
 }
 $("#termReset")&&($("#termReset").onclick=()=>openTerminal(true));
 
+/* ---- database browser ---- */
+let dbEngine="sqlite",dbLoaded=false;
+async function loadDb(){
+  if(dbLoaded)return;dbLoaded=true;
+  document.querySelectorAll("#dbEngine button").forEach(b=>b.onclick=()=>{
+    dbEngine=b.dataset.eng;
+    document.querySelectorAll("#dbEngine button").forEach(x=>x.classList.toggle("on",x===b));
+    document.querySelectorAll(".dbf").forEach(el=>
+      el.style.display=el.dataset.for===dbEngine?"":"none");
+    if(dbEngine==="postgres")loadPgContainers();
+  });
+  $("#dbRun").onclick=dbRun;
+  $("#dbSql").addEventListener("keydown",e=>{
+    if((e.ctrlKey||e.metaKey)&&e.key==="Enter")dbRun();});
+}
+async function loadPgContainers(){
+  try{
+    const r=await api("/api/pgcontainers");
+    const sel=$("#dbContainer");
+    sel.innerHTML='<option value="">— host psql —</option>'+
+      (r.containers||[]).map(c=>`<option value="${esc(c.name)}">${esc(c.name)} (${esc(c.image)})</option>`).join("");
+  }catch(e){}
+}
+async function dbRun(){
+  const body={engine:dbEngine,sql:$("#dbSql").value,write:$("#dbWrite").checked};
+  if(dbEngine==="sqlite")body.path=$("#dbPath").value.trim();
+  else{body.conn=$("#dbConn").value.trim();body.container=$("#dbContainer").value;}
+  $("#dbStat").textContent="running…";
+  try{
+    const r=await api("/api/dbquery",{method:"POST",body:JSON.stringify(body)});
+    $("#dbStat").textContent=r.columns&&r.columns.length
+      ?`${r.rows.length} row(s)`:`ok (${r.rowcount} affected)`;
+    if(r.tables)$("#dbTables").innerHTML="tables: "+r.tables.map(t=>
+      `<button class="btn small" data-tbl="${esc(t)}">${esc(t)}</button>`).join(" ");
+    document.querySelectorAll("[data-tbl]").forEach(b=>b.onclick=()=>{
+      $("#dbSql").value=`SELECT * FROM ${b.dataset.tbl} LIMIT 100;`;dbRun();});
+    const cols=r.columns||[];
+    $("#dbResult").innerHTML=cols.length
+      ?`<thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join("")}</tr></thead>`+
+       `<tbody>${r.rows.map(row=>`<tr>${row.map(v=>
+        `<td class="mono" style="font-size:12px">${esc(v==null?"∅":String(v))}</td>`).join("")}</tr>`).join("")}</tbody>`
+      :"";
+  }catch(e){$("#dbStat").textContent="";toast(e.message,false);}
+}
+
 /* ---- simple mode: hide developer tooling for non-developer users ---- */
-const SIMPLE_TABS=["term","net","dev","git","api","runtimes","tools","kernel"];
+const SIMPLE_TABS=["term","net","dev","db","git","api","runtimes","tools","kernel"];
 function applySimple(){
   const on=localStorage.perchSimple==="1";
   SIMPLE_TABS.forEach(t=>{
