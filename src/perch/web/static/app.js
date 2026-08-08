@@ -1252,28 +1252,15 @@ function fontZoom(d){
   t.active.term.options.fontSize=TERM_FONT;_paneFit(t.active);
 }
 function toggleFull(){
+  // Pure CSS maximize — fills the browser window. We deliberately do NOT call
+  // the native Fullscreen API: in the WebKitGTK desktop window it can crash
+  // the embedder, and it adds nothing over filling the window here. The button
+  // toggles it (no Esc binding, so a fullscreen vim's Esc is untouched).
   const card=$("#termCard");
-  // in-app maximize is the reliable path (fills the window, sizes correctly);
-  // also request real OS fullscreen when the engine supports it.
   const on=card.classList.toggle("fs");
   const btn=$("#termFull");if(btn)btn.textContent=on?"⛶ Exit":"⛶ Fullscreen";
-  try{
-    if(on){const req=card.requestFullscreen||card.webkitRequestFullscreen;
-      if(req){const p=req.call(card);if(p&&p.catch)p.catch(()=>{});}}
-    else{const ex=document.exitFullscreen||document.webkitExitFullscreen;
-      if((document.fullscreenElement||document.webkitFullscreenElement)&&ex)ex.call(document);}
-  }catch(e){}
   setTimeout(_fitAll,80);
 }
-document.addEventListener("fullscreenchange",()=>{
-  // Esc out of OS fullscreen → also drop the in-app maximize + refit
-  if(!document.fullscreenElement){
-    const card=$("#termCard");
-    if(card&&card.classList.contains("fs")){card.classList.remove("fs");
-      const btn=$("#termFull");if(btn)btn.textContent="⛶ Fullscreen";}
-  }
-  setTimeout(_fitAll,60);
-});
 function openTerminal(){
   if(!_termInit){
     _termInit=true;

@@ -290,10 +290,6 @@ code{background:var(--track);padding:2px 6px;border-radius:6px;
 .term-hint{font-size:11px;margin-top:6px}
 .term-card.fs{position:fixed;inset:0;z-index:40;height:100vh;width:100vw;
   border-radius:0;margin:0;padding:12px;background:var(--page)}
-/* native OS fullscreen: override the default 74vh so it truly fills */
-.term-card:fullscreen,.term-card:-webkit-full-screen{
-  height:100vh;width:100vw;border-radius:0;margin:0;padding:12px;
-  background:var(--page)}
 :root.reduce-fx .term-tab.on{box-shadow:none}
 
 /* Reduce effects — no blur/gradient/glow/animation for low-powered machines.

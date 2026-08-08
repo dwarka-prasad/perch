@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.2
+
+- **Fix: terminal Fullscreen crash** — the button no longer calls the native
+  Fullscreen API, which could crash the WebKitGTK desktop window (and added
+  nothing over filling the window). Fullscreen is now a pure in-app maximize
+  that reliably fills the window; click **Exit** to leave.
+
 ## 1.2.1
 
 - **Fix: terminal Fullscreen button** — now reliably fills the window (an
