@@ -11,6 +11,8 @@ A local system + developer dashboard for Linux — monitoring, ops, a full
 developer toolbox, and an AI assistant, in one token-protected web app that
 runs on `127.0.0.1`.
 
+![Perch overview — live CPU/memory/network/GPU charts, alerts and hardware panel](docs/overview.png)
+
 </div>
 
 ---
@@ -52,6 +54,8 @@ step, no cloud.
 - **Processes / Users / Logs / Kernel / Updates** — kill processes, inspect
   any process in a detail modal, browse the journal live, read kernel
   tunables, and see pending APT updates with a sidebar badge.
+
+![Monitor tab — alert rules, 24 h history chart, and outbound alert channels](docs/monitor.png)
 
 ### Manage storage & files
 - **Storage** — disk usage plus a folder-size analyzer to find what's eating
