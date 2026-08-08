@@ -1,0 +1,11 @@
+[Unit]
+Description=Perch dashboard (http://127.0.0.1:8090)
+Documentation=https://github.com/your-org/perch
+
+[Service]
+ExecStart=/usr/bin/perch
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

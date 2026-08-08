@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+# Refresh desktop/icon caches so the launcher entry shows up immediately.
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -qtf /usr/share/icons/hicolor || true
+fi
+echo "Perch installed. Launch it from your app menu, or run:  perch-desktop"
+echo "Headless:  perch    (then open the printed http://127.0.0.1:8090 URL)"
+exit 0

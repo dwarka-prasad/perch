@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtualenvs
+.venv/
+venv/
+
+# Packaging output
+*.deb
+
+# Runtime / local state (never commit)
+*.token
+.perch-token
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

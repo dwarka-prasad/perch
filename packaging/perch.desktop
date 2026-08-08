@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Perch
+GenericName=System Dashboard
+Comment=Local system and developer dashboard — monitor, manage, and build
+Exec=perch-desktop
+Icon=perch
+Terminal=false
+Categories=System;Monitor;Utility;Development;
+Keywords=system;monitor;dashboard;disk;process;docker;devtools;settings;
+StartupWMClass=perch

@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Perch</title>
+<link rel="stylesheet" href="/static/styles.css"></head><body>
+<div class="layout">
+<nav>
+  <div class="brand">🐦 Perch
+    <span class="muted" style="font-size:10.5px;font-weight:400;display:block;
+      margin-top:2px">Ctrl+K for anything</span></div>
+  <div class="ngroup">System</div>
+  <button data-tab="overview" class="active">📈 Overview</button>
+  <button data-tab="monitor">🚨 Monitor</button>
+  <button data-tab="proc">⚙️ Processes</button>
+  <button data-tab="logs">📜 Logs</button>
+  <button data-tab="kernel">🧬 Kernel</button>
+  <button data-tab="updates">📦 Updates <span class="badge" id="updBadge"></span></button>
+  <button data-tab="packages">🛒 Packages</button>
+  <button data-tab="settings">⚙️ Settings</button>
+  <button data-tab="users">👤 Users</button>
+  <div class="ngroup">Storage &amp; files</div>
+  <button data-tab="storage">💾 Storage</button>
+  <button data-tab="files">📁 Files</button>
+  <button data-tab="search">🔍 Search</button>
+  <button data-tab="clean">🧹 Clean up</button>
+  <div class="ngroup">Developer</div>
+  <button data-tab="net">🌐 Network</button>
+  <button data-tab="dev">🧰 Dev</button>
+  <button data-tab="runtimes">📚 Runtimes</button>
+  <button data-tab="tools">🔧 Tools</button>
+  <div class="ngroup">Assistant</div>
+  <button data-tab="ai">✨ AI</button>
+  <div class="spacer"></div>
+  <div id="sbStats"></div>
+  <button id="themeBtn">🌓 Theme</button>
+</nav>
+<main>
+  <h1 id="host">Perch</h1>
+  <div class="sub" id="sysline">loading…</div>
+
+  <section id="tab-overview" class="on">
+    <div class="cards">
+      <div class="card"><div class="k">CPU</div><div class="v" id="cpuV">–</div>
+        <div class="d" id="cpuD"></div><svg id="cpuS"></svg></div>
+      <div class="card"><div class="k">Memory</div><div class="v" id="memV">–</div>
+        <div class="d" id="memD"></div><svg id="memS"></svg></div>
+      <div class="card"><div class="k">Network</div><div class="v" id="netV">–</div>
+        <div class="d" id="netD"></div><svg id="netS"></svg>
+        <div class="legend"><span><i class="sw" style="background:var(--s1)"></i>download</span>
+        <span><i class="sw" style="background:var(--s2)"></i>upload</span></div></div>
+      <div class="card"><div class="k">GPU <span class="muted" id="gpuN" style="font-weight:400"></span></div>
+        <div class="v" id="gpuV">–</div><div class="d" id="gpuD"></div>
+        <svg id="gpuS"></svg></div>
+      <div class="card"><div class="k">Per-core load</div>
+        <div class="v" id="coreV">–</div><div class="d" id="coreD"></div>
+        <div class="corebars" id="cores"></div></div>
+    </div>
+    <div class="cards">
+      <div class="card"><div class="k">Disk I/O</div><div class="v" id="dioV">–</div>
+        <div class="d" id="dioD"></div><svg id="dioS"></svg>
+        <div class="legend"><span><i class="sw" style="background:var(--s1)"></i>read</span>
+        <span><i class="sw" style="background:var(--s2)"></i>write</span></div></div>
+      <div class="card"><div class="k">Temperature</div><div class="v" id="tmpV">–</div>
+        <div class="d" id="tmpD"></div><svg id="tmpS"></svg></div>
+      <div class="card"><div class="k">Battery</div><div class="v" id="batV">–</div>
+        <div class="d" id="batD"></div><div class="d" id="batH"></div></div>
+      <div class="card"><div class="k">Uptime</div><div class="v" id="upV">–</div>
+        <div class="d" id="loadD"></div><div class="d" id="npD"></div></div>
+    </div>
+    <div class="panel"><h2>This laptop</h2><div id="hwGrid" class="muted">…</div></div>
+  </section>
+
+  <section id="tab-monitor">
+    <div class="panel"><h2>Alert rules <span class="muted">— desktop notification
+      when breached (10-min cooldown per rule)</span></h2>
+      <table id="monRules"><tbody></tbody></table>
+      <div class="row" style="margin-top:10px;margin-bottom:0">
+        <button class="btn" id="monSave">💾 Save rules</button>
+        <button class="btn small" id="monTest">🔔 Test notification</button>
+        <span class="muted" id="monStat" style="font-size:12px"></span></div></div>
+    <div class="panel"><h2>Last 24 hours <span class="muted">— 1-minute samples,
+      survives restarts</span></h2>
+      <svg id="monChart" style="width:100%;height:180px"></svg>
+      <div class="legend" id="monLegend"></div></div>
+    <div class="panel"><h2>Alert history</h2>
+      <table id="monEvents"><tbody></tbody></table></div>
+  </section>
+
+  <section id="tab-tools">
+    <div class="panel"><h2>Website preview <span class="muted">— rendered by headless Chrome</span></h2>
+      <div class="row" style="margin-bottom:0">
+        <input type="text" id="siteUrl" placeholder="example.com or http://127.0.0.1:3000"
+          style="flex:1;min-width:260px">
+        <button class="btn" id="siteGo">Preview ▶</button>
+        <span class="muted" id="siteStat" style="font-size:12px"></span>
+      </div>
+    </div>
+    <div class="panel"><h2>HTTP request tester</h2>
+      <div class="row">
+        <select id="hMethod" class="btn"><option>GET</option><option>POST</option>
+          <option>PUT</option><option>PATCH</option><option>DELETE</option>
+          <option>HEAD</option><option>OPTIONS</option></select>
+        <input type="text" id="hUrl" placeholder="http://127.0.0.1:8080/api/health"
+          style="flex:1;min-width:280px">
+        <button class="btn" id="hSend">Send ▶</button>
+        <button class="btn small" id="hCurl">Copy as curl</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <textarea id="hHeaders" spellcheck="false" placeholder="Headers, one per line:&#10;Content-Type: application/json&#10;Authorization: Bearer …"
+          style="height:80px" class="tin"></textarea>
+        <textarea id="hBody" spellcheck="false" placeholder="Request body (POST/PUT/PATCH)"
+          style="height:80px" class="tin"></textarea>
+      </div>
+      <div id="hResMeta" class="row" style="margin:10px 0 6px"></div>
+      <pre id="hResHead" class="mono" style="display:none;font-size:11px;background:var(--track);
+        padding:8px;border-radius:8px;white-space:pre-wrap;max-height:140px;overflow:auto"></pre>
+      <pre id="hRes" class="mono" style="display:none;font-size:12px;background:var(--track);
+        padding:10px;border-radius:8px;white-space:pre-wrap;max-height:340px;overflow:auto"></pre>
+    </div>
+    <div class="panel"><h2>JSON tools</h2>
+      <div class="row">
+        <button class="btn small" data-j="fmt">Format</button>
+        <button class="btn small" data-j="min">Minify</button>
+        <button class="btn small" data-j="sort">Sort keys</button>
+        <button class="btn small" data-j="keys">Copy all key paths</button>
+        <button class="btn small" data-j="y2j">YAML → JSON</button>
+        <button class="btn small" data-j="j2y">JSON → YAML</button>
+        <button class="btn small" data-j="copy">Copy output</button>
+        <span class="muted" id="jStat" style="font-size:12px"></span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <textarea id="jIn" spellcheck="false" placeholder='paste JSON here…'
+          style="height:220px" class="tin"></textarea>
+        <textarea id="jOut" spellcheck="false" readonly style="height:220px" class="tin"></textarea>
+      </div>
+    </div>
+    <div class="panel"><h2>Converters</h2>
+      <div class="row">
+        <button class="btn small" data-c="b64e">Base64 encode</button>
+        <button class="btn small" data-c="b64d">Base64 decode</button>
+        <button class="btn small" data-c="urle">URL encode</button>
+        <button class="btn small" data-c="urld">URL decode</button>
+        <button class="btn small" data-c="epoch">Epoch → date</button>
+        <button class="btn small" data-c="now">Now → epoch</button>
+        <button class="btn small" data-c="uuid">UUID v4</button>
+        <button class="btn small" data-c="sha">SHA-256</button>
+        <button class="btn small" data-c="jwt">Decode JWT</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <textarea id="cIn" spellcheck="false" placeholder="input…" style="height:90px" class="tin"></textarea>
+        <textarea id="cOut" spellcheck="false" readonly style="height:90px" class="tin"></textarea>
+      </div>
+    </div>
+    <div class="panel"><h2>Regex tester <span class="muted">— JavaScript syntax, live</span></h2>
+      <div class="row">
+        <input type="text" id="rxPat" placeholder="pattern, e.g. (\w+)@(\w+\.\w+)" style="flex:1;min-width:220px" class="mono">
+        <input type="text" id="rxFlags" value="g" style="width:60px;min-width:60px" title="flags: g i m s u">
+        <span class="muted" id="rxStat" style="font-size:12px"></span>
+      </div>
+      <textarea id="rxText" spellcheck="false" placeholder="test text…" style="height:90px" class="tin"></textarea>
+      <div id="rxOut" class="mono" style="margin-top:8px;font-size:12px;background:var(--track);
+        padding:10px;border-radius:8px;white-space:pre-wrap;max-height:220px;overflow:auto;display:none"></div>
+    </div>
+    <div class="panel"><h2>Text diff</h2>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <textarea id="dfA" spellcheck="false" placeholder="original…" style="height:130px" class="tin"></textarea>
+        <textarea id="dfB" spellcheck="false" placeholder="changed…" style="height:130px" class="tin"></textarea>
+      </div>
+      <div class="row" style="margin-top:8px"><button class="btn small" id="dfGo">Compare</button>
+        <span class="muted" id="dfStat" style="font-size:12px"></span></div>
+      <pre id="dfOut" class="mono" style="display:none;font-size:12px;background:var(--track);
+        padding:10px;border-radius:8px;white-space:pre-wrap;max-height:300px;overflow:auto"></pre>
+    </div>
+    <div class="panel"><h2>More utilities</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px">
+        <div><h2 style="margin-bottom:8px">Cron explainer</h2>
+          <div class="row"><input type="text" id="cronIn" placeholder="*/15 9-18 * * 1-5" class="mono" style="flex:1;min-width:160px">
+          <button class="btn small" id="cronGo">Next runs</button></div>
+          <div id="cronOut" class="mono muted" style="font-size:12px;white-space:pre-wrap"></div></div>
+        <div><h2 style="margin-bottom:8px">Color converter</h2>
+          <div class="row"><input type="text" id="colIn" placeholder="#2a78d6 or rgb(42,120,214)" class="mono" style="flex:1;min-width:160px">
+          <button class="btn small" id="colGo">Convert</button>
+          <span id="colSw" style="width:26px;height:26px;border-radius:6px;border:1px solid var(--border)"></span></div>
+          <div id="colOut" class="mono muted" style="font-size:12px;white-space:pre-wrap"></div></div>
+        <div><h2 style="margin-bottom:8px">Case converter</h2>
+          <div class="row"><input type="text" id="caseIn" placeholder="my variable name" style="flex:1;min-width:160px">
+          <button class="btn small" id="caseGo">Convert</button></div>
+          <div id="caseOut" class="mono muted" style="font-size:12px;white-space:pre-wrap"></div></div>
+        <div><h2 style="margin-bottom:8px">Secret generator</h2>
+          <div class="row"><input type="text" id="secLen" value="32" style="width:56px;min-width:56px" title="length">
+          <label class="pill"><input type="checkbox" id="secSym"> symbols</label>
+          <button class="btn small" id="secGo">Generate</button>
+          <button class="btn small" id="secCopy">Copy</button></div>
+          <div id="secOut" class="mono" style="font-size:12.5px;word-break:break-all"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-search">
+    <div class="row">
+      <input type="text" id="sq" placeholder="Search file or folder name across the whole system…"
+        style="min-width:340px" autofocus>
+      <label class="pill" title="POSIX extended regex, e.g. \.log$  ^/etc/.*conf  report-202[0-9]">
+        <input type="checkbox" id="sqRe"> regex</label>
+      <span class="muted" id="sqStatus"></span>
+      <span style="flex:1"></span>
+      <button class="btn small" id="reindex">↻ Rebuild index</button>
+    </div>
+    <div class="panel" style="padding:6px 4px"><table id="stable">
+      <thead><tr><th>Name</th><th>Location</th><th class="num">Size</th>
+      <th class="num">Modified</th><th></th></tr></thead>
+      <tbody><tr><td colspan=5 class="muted" style="padding:14px">Type at least
+      2 characters. Matches on the file name first, then on the full path.
+      Prefix matches rank highest.</td></tr></tbody></table></div>
+  </section>
+
+  <section id="tab-net">
+    <div class="panel"><h2>Listening ports <span class="muted" id="estCount"></span></h2>
+      <table id="ports"><thead><tr><th class="num">Port</th><th>Bind address</th>
+      <th>Exposure</th><th>Process</th><th class="num">PID</th><th></th></tr></thead>
+      <tbody></tbody></table>
+      <div class="muted" style="font-size:12px;margin-top:8px">Process names show
+      only for your own processes (Linux hides others without root).
+      0.0.0.0 / :: means the port accepts connections from the network, not just
+      this machine.</div></div>
+    <div class="panel"><h2>Network interfaces</h2><div id="ifaces"></div></div>
+    <div class="panel"><h2>Internet</h2>
+      <div class="row">
+        <button class="btn" id="speedGo">🚀 Run speed test</button>
+        <span class="muted" style="font-size:12px">downloads 20 MB from Cloudflare</span>
+      </div>
+      <div id="speedOut" class="row" style="margin-bottom:0"></div></div>
+  </section>
+
+  <section id="tab-dev">
+    <div class="panel"><h2>Docker containers
+      <button class="btn small" id="dockerReload" style="margin-left:8px">↻</button></h2>
+      <div id="dockerBody" class="muted">…</div>
+      <pre id="dockerLogs" class="mono" style="display:none;max-height:320px;
+        overflow:auto;background:var(--track);padding:10px;border-radius:8px;
+        white-space:pre-wrap;font-size:11.5px"></pre>
+      <div id="dockerImgs" style="margin-top:10px"></div></div>
+    <div class="panel"><h2>Services — your user scope <span class="muted">(system-failed shown below)</span></h2>
+      <table id="svct"><tbody></tbody></table>
+      <div id="svcFailed" style="margin-top:10px"></div></div>
+    <div class="panel"><h2>Toolchain</h2><div id="tools" class="muted">…</div></div>
+  </section>
+
+  <section id="tab-storage">
+    <div class="panel"><h2>Mounted disks</h2><div id="diskList"></div></div>
+    <div class="panel"><h2>What's taking space? <span class="muted">— folder size analyzer</span></h2>
+      <div class="row">
+        <div class="crumbs" id="duCrumbs"></div>
+        <button class="btn" id="duGo">Analyze this folder</button>
+        <span class="muted" id="duNote"></span>
+      </div>
+      <div id="duList"></div>
+    </div>
+  </section>
+
+  <section id="tab-proc">
+    <div class="row">
+      <input type="text" id="pq" placeholder="Filter by name or command…">
+      <button class="btn" data-sort="cpu" id="sortCpu">Sort: CPU</button>
+      <button class="btn" data-sort="mem" id="sortMem">Sort: Memory</button>
+      <span class="muted">auto-refreshes every 3 s · kill works on your own processes</span>
+    </div>
+    <div class="panel" style="padding:6px 4px"><table id="ptable">
+      <thead><tr><th>PID</th><th>Name</th><th>User</th><th class="num">CPU %</th>
+      <th class="num">Memory</th><th>Status</th><th></th></tr></thead>
+      <tbody></tbody></table></div>
+  </section>
+
+  <section id="tab-kernel">
+    <div class="panel"><h2>Kernel</h2>
+      <div class="mono" id="kver" style="font-size:12px;margin-bottom:6px"></div>
+      <div class="muted" style="font-size:12px">boot parameters:</div>
+      <div class="mono" id="kcmd" style="font-size:11.5px;word-break:break-all"></div></div>
+    <div class="panel"><h2>CPU frequency governor</h2><div id="kgov"></div></div>
+    <div class="panel"><h2>Tunables <span class="muted">— live values; changing them
+      needs root, so each row gives you the exact command to copy</span></h2>
+      <table id="ktun"><tbody></tbody></table>
+      <div class="muted" style="font-size:12px;margin-top:8px">To make a sysctl
+      change permanent, also add the <code>key=value</code> line to
+      <code>/etc/sysctl.d/99-local.conf</code>.</div></div>
+    <div class="panel"><h2>Largest loaded modules <span class="muted" id="kmodn"></span></h2>
+      <table id="kmods"><tbody></tbody></table></div>
+  </section>
+
+  <section id="tab-logs">
+    <div class="row">
+      <select id="logSrc" class="btn"><option value="system">system journal</option>
+        <option value="user">user journal</option>
+        <option value="kernel">kernel (dmesg)</option></select>
+      <select id="logPrio" class="btn"><option value="">all levels</option>
+        <option value="3">err and worse</option>
+        <option value="4">warning and worse</option>
+        <option value="6">info and worse</option></select>
+      <input type="text" id="logQ" placeholder="grep pattern…" style="min-width:180px">
+      <button class="btn" id="logGo">Load</button>
+      <label class="pill"><input type="checkbox" id="logFollow"> follow (live)</label>
+      <span class="muted" id="logStat" style="font-size:12px"></span>
+    </div>
+    <div class="panel" style="padding:8px 6px">
+      <div id="logView" class="mono" style="max-height:calc(100vh - 220px);
+        overflow:auto;font-size:11.5px;line-height:1.55"></div></div>
+  </section>
+
+  <section id="tab-ai">
+    <div class="panel" style="display:flex;flex-direction:column;
+      height:calc(100vh - 130px)">
+      <div class="row" style="margin-bottom:8px">
+        <span class="muted" style="font-size:12.5px">Powered by your local
+          <b style="color:var(--ink)">Claude Code</b> — answers can reference
+          live system stats.</span>
+        <span style="flex:1"></span>
+        <label class="pill"><input type="checkbox" id="aiSnap" checked>
+          include system snapshot</label>
+        <button class="btn small" id="aiReset">＋ New conversation</button>
+      </div>
+      <div class="row" style="margin-bottom:8px">
+        <button class="btn small aiq">Why is my memory usage high right now?</button>
+        <button class="btn small aiq">What can I safely clean to free disk space?</button>
+        <button class="btn small aiq">Any suspicious processes or open ports?</button>
+        <button class="btn small aiq">Suggest kernel tunables for a dev laptop</button>
+      </div>
+      <div id="aiChat" style="flex:1;overflow:auto;display:flex;
+        flex-direction:column;gap:10px;padding:4px 2px"></div>
+      <div class="row" style="margin-top:10px;margin-bottom:0">
+        <textarea id="aiIn" placeholder="Ask anything about this machine… (Enter to send, Shift+Enter for newline)"
+          style="flex:1;height:64px;resize:none;background:var(--page);
+          color:var(--ink);border:1px solid var(--border);border-radius:8px;
+          padding:9px 11px;font:inherit;outline:none"></textarea>
+        <button class="btn" id="aiGo" style="height:44px">Ask ✨</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-updates">
+    <div class="panel"><h2>Pending package updates
+      <button class="btn small" id="updReload" style="margin-left:8px">↻ Re-check</button></h2>
+      <div class="row" id="updMeta"></div>
+      <div class="row"><button class="btn" id="updApt">⬆ Upgrade all apt packages</button>
+        <button class="btn" id="updSnap">⬆ Refresh all snaps</button>
+        <span class="muted" style="font-size:12px">shows a password prompt · live output below</span></div>
+      <table id="updTable"><tbody></tbody></table>
+      <div class="muted" style="font-size:12px;margin-top:10px">Based on the last
+        <code>apt update</code> (root-only, so run it in a terminal to refresh the
+        package lists). Install everything with <code>sudo apt upgrade</code>.</div>
+    </div>
+  </section>
+
+  <section id="tab-packages">
+    <div class="panel"><h2>Search &amp; install software</h2>
+      <div class="row">
+        <input type="text" id="pkgQ" placeholder="Search apt + snap (e.g. ripgrep, htop, postman)…"
+          style="flex:1;min-width:280px">
+        <button class="btn" id="pkgGo">Search</button>
+      </div>
+      <div class="muted" id="pkgStat" style="font-size:12px;margin-bottom:8px"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div><h2 style="margin-bottom:6px">APT</h2><div id="pkgApt" class="muted">—</div></div>
+        <div><h2 style="margin-bottom:6px">Snap</h2><div id="pkgSnap" class="muted">—</div></div>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:10px">Installing needs
+        admin rights — a password dialog appears. Live output shows in the job box.</div>
+    </div>
+  </section>
+
+  <section id="tab-settings">
+    <div class="panel"><h2>Display &amp; sound</h2>
+      <div id="setDisplay" class="muted">loading…</div></div>
+    <div class="panel"><h2>Connectivity</h2>
+      <div id="setConn" class="muted">loading…</div></div>
+    <div class="panel"><h2>Appearance</h2>
+      <div class="row"><span style="width:130px">GNOME theme</span>
+        <div class="seg" id="setTheme">
+          <button data-th="prefer-light">Light</button>
+          <button data-th="default">Auto</button>
+          <button data-th="prefer-dark">Dark</button></div></div>
+      <div class="row" style="margin-bottom:0"><span style="width:130px">Wallpaper</span>
+        <input type="text" id="wpPath" placeholder="/path/to/image.jpg (or browse in Files → “Set as wallpaper”)"
+          style="flex:1;min-width:240px" class="mono">
+        <button class="btn small" id="wpSet">Apply</button></div></div>
+  </section>
+
+  <section id="tab-runtimes">
+    <div class="panel"><h2>Installed runtimes</h2>
+      <table id="rtTable"><tbody></tbody></table></div>
+    <div class="panel"><h2>Rust toolchains <span class="muted">(rustup)</span></h2>
+      <div id="rtRust" class="muted">—</div></div>
+    <div class="panel"><h2>Node.js versions</h2>
+      <div id="rtNode" class="muted">—</div></div>
+  </section>
+
+  <section id="tab-users">
+    <div class="panel"><h2>Active sessions</h2><table id="sess">
+      <thead><tr><th>User</th><th>Terminal</th><th>From</th><th>Logged in</th></tr></thead>
+      <tbody></tbody></table></div>
+    <div class="panel"><h2>Resource usage by user</h2><table id="uusage">
+      <thead><tr><th>User</th><th class="num">Processes</th>
+      <th class="num">CPU %</th><th class="num">Memory</th><th style="width:30%"></th></tr></thead>
+      <tbody></tbody></table></div>
+    <div class="panel"><h2>Local user accounts</h2><table id="uacct">
+      <thead><tr><th>User</th><th class="num">UID</th><th>Home</th><th>Shell</th></tr></thead>
+      <tbody></tbody></table></div>
+  </section>
+
+  <section id="tab-files">
+    <div class="row">
+      <div class="crumbs" id="fCrumbs"></div>
+      <span class="spacer" style="flex:1"></span>
+      <button class="btn small" id="newFile">＋ New file</button>
+      <button class="btn small" id="newSketch">🎨 Sketch</button>
+      <button class="btn small" id="termHere">🖥 Terminal here</button>
+      <button class="btn small" id="codeHere">⌨ VS Code here</button>
+      <label class="pill"><input type="checkbox" id="showHidden"> hidden files</label>
+    </div>
+    <div class="row" id="bulkBar" style="display:none;background:var(--track);
+      border-radius:8px;padding:7px 12px;margin-bottom:10px">
+      <b id="bulkN"></b>
+      <button class="btn small danger" id="bulkTrash">🗑 Trash selected</button>
+      <button class="btn small" id="bulkClear">clear selection</button>
+    </div>
+    <div class="panel" style="padding:6px 4px"><table id="ftable">
+      <thead><tr><th style="width:26px"><input type="checkbox" id="selAll" title="select all"></th>
+      <th>Name</th><th class="num">Size</th><th class="num">Modified</th><th></th></tr></thead>
+      <tbody></tbody></table></div>
+    <div class="muted" style="font-size:12.5px">Click a folder to enter it, a file
+      name to open it with its default app. “Trash” moves a file to the system trash.</div>
+  </section>
+
+  <section id="tab-clean">
+    <div class="panel"><h2>One-click cleanup <span class="muted">— safe, user-level caches</span></h2>
+      <div id="cleanTargets" class="muted">scanning…</div></div>
+    <div class="panel"><h2>Largest items in ~/.cache</h2>
+      <div class="muted" style="margin-bottom:8px;font-size:12.5px">Apps rebuild
+      their caches automatically, but a running app may briefly misbehave if its
+      cache vanishes. Delete with judgement.</div>
+      <table id="cacheTop"><tbody></tbody></table></div>
+    <div class="panel"><h2>System-level (needs sudo — run in a terminal)</h2>
+      <div id="sudoList" class="muted">…</div></div>
+  </section>
+</main></div>
+<div id="jobBox" style="display:none;position:fixed;bottom:16px;left:50%;
+  transform:translateX(-50%);width:min(720px,94vw);z-index:9;
+  background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  box-shadow:0 10px 40px rgba(0,0,0,.3);overflow:hidden">
+  <div style="display:flex;align-items:center;gap:10px;padding:9px 14px;
+    border-bottom:1px solid var(--border)">
+    <b id="jobTitle" style="font-size:13px">Job</b>
+    <span id="jobState" class="pill" style="font-size:11px"></span>
+    <span style="flex:1"></span>
+    <button class="btn small" id="jobClose">✕</button></div>
+  <pre id="jobOut" class="mono" style="margin:0;padding:10px 14px;font-size:11px;
+    max-height:260px;overflow:auto;white-space:pre-wrap;line-height:1.5"></pre>
+</div>
+<div id="pal"><div id="palBox">
+  <input id="palIn" placeholder="Jump to a tab, run an action, search files…" autocomplete="off">
+  <div id="palList"></div>
+</div></div>
+<div id="lightbox" style="display:none;position:fixed;inset:0;z-index:10;
+  background:rgba(0,0,0,.75);align-items:center;justify-content:center;
+  flex-direction:column;gap:10px;padding:30px">
+  <div style="color:#fff;font-size:13px;display:flex;gap:14px;align-items:center;
+    max-width:90vw">
+    <span id="lbName" class="mono" style="overflow:hidden;text-overflow:ellipsis;
+      white-space:nowrap"></span>
+    <button class="btn small" id="lbClose">✕ close</button></div>
+  <div id="lbBody" style="max-width:92vw;max-height:84vh;display:flex;
+    align-items:center;justify-content:center"></div>
+</div>
+<div class="drawer" id="drawer">
+  <header>
+    <div class="seg"><button id="modeNote" class="on">✏️ Note</button><button id="modeSketch">🎨 Sketch</button></div>
+    <input type="text" id="dName" placeholder="filename">
+    <button class="btn small" id="dClose">✕</button>
+  </header>
+  <div class="body">
+    <div class="row" style="margin-bottom:0;gap:6px">
+      <span class="muted" style="font-size:12px">save to:</span>
+      <input type="text" id="dFolder" class="mono" style="flex:1;min-width:0;
+        font-size:11.5px;padding:4px 8px">
+      <button class="btn small" data-dest="home">~</button>
+      <button class="btn small" data-dest="Desktop">Desktop</button>
+      <button class="btn small" data-dest="Documents">Documents</button>
+    </div>
+    <textarea id="dText" spellcheck="false" placeholder="Type your note, snippet, todo…"></textarea>
+    <canvas id="dCanvas" style="display:none"></canvas>
+    <div class="foot" id="sketchTools" style="display:none">
+      <span class="muted" style="font-size:12px">pen</span>
+      <input type="color" id="penColor" value="#2a78d6" style="width:34px;height:26px;border:none;background:none;padding:0;cursor:pointer">
+      <input type="range" id="penSize" min="1" max="18" value="3" style="width:90px">
+      <button class="btn small" id="penErase">Eraser</button>
+      <button class="btn small" id="penClear">Clear</button>
+    </div>
+    <div class="foot">
+      <button class="btn" id="dSave">💾 Save</button>
+      <button class="btn small" id="vimTog">vim: off</button>
+      <span class="mono" id="vimStat" style="font-size:12px;font-weight:700"></span>
+      <span class="muted" id="dStatus" style="font-size:12px"></span>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>const TOKEN="{{TOKEN}}";const HOME_DIR="{{HOME}}";</script>
+<script src="/static/app.js"></script></body></html>

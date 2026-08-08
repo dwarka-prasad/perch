@@ -1,0 +1,27 @@
+# Run Perch as a host-monitoring server.
+#
+#   docker compose -f docker/compose.yaml up -d --build
+#   docker compose -f docker/compose.yaml logs   # copy the token URL
+#
+# host pid + network give real process/network visibility. The dashboard binds
+# to 127.0.0.1 by default; set PERCH_HOST=0.0.0.0 to reach it from the LAN
+# (still token-protected). Desktop features are host-only — use the .deb there.
+services:
+  perch:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: perch:latest
+    container_name: perch
+    network_mode: host
+    pid: host
+    environment:
+      PERCH_HOST: 127.0.0.1
+      PERCH_PORT: 8090
+    volumes:
+      - perch-state:/root/.cache/perch
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # optional: Docker tab
+    restart: unless-stopped
+
+volumes:
+  perch-state:

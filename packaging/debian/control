@@ -1,0 +1,18 @@
+Package: perch
+Version: 1.0.0
+Section: utils
+Priority: optional
+Architecture: all
+Depends: python3 (>= 3.8), python3-psutil, python3-yaml
+Recommends: python3-gi, gir1.2-webkit2-4.0, python3-openpyxl, python3-docx
+Suggests: google-chrome-stable, docker.io
+Maintainer: Perch contributors <perch@example.com>
+Homepage: https://github.com/your-org/perch
+Description: Perch — local system and developer dashboard
+ Perch is a single-binary web dashboard for managing your Linux machine:
+ live CPU/memory/GPU/disk/network charts, process and service control,
+ storage analysis and cleanup, a whole-system file search, log viewer,
+ kernel tunables, package management, laptop settings (brightness, volume,
+ Bluetooth, Wi-Fi, wallpaper, theme), a developer toolbox (HTTP tester,
+ JSON/YAML, regex, diff, converters), and an AI assistant backed by the
+ local Claude CLI. It binds to 127.0.0.1 and is protected by an access token.

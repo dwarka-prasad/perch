@@ -1,0 +1,7 @@
+"""Static project metadata shared across the server, desktop app and packaging."""
+
+APP_NAME = "perch"
+DISPLAY_NAME = "Perch"
+VERSION = "1.0.0"
+DEFAULT_PORT = 8090
+TAGLINE = "Your machine, at a glance."
