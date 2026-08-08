@@ -29,8 +29,9 @@ except ImportError:  # self-install the only external dependency
                     "--user", "psutil"], check=True)
     import psutil
 
-PORT = int(os.environ.get("PERCH_PORT",
-           sys.argv[1] if len(sys.argv) > 1 else 9080))
+PORT = int(os.environ.get("PERCH_PORT") or
+           (sys.argv[1] if len(sys.argv) > 1 and sys.argv[1].isdigit()
+            else 9080))
 HOST = os.environ.get("PERCH_HOST", "127.0.0.1")
 HOME = os.path.expanduser("~")
 TOKEN_FILE = os.path.join(HOME, ".perch-token")

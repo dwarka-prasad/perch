@@ -26,6 +26,26 @@ jobs:
       - name: Frontend JS syntax
         run: node --check src/perch/web/static/app.js
 
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.8", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install runtime deps
+        run: pip install psutil pyyaml
+      - name: Unit + HTTP smoke tests
+        run: python -m unittest discover -s tests -v
+      - name: Wheel builds with real metadata
+        run: |
+          pip wheel --no-deps -w /tmp/wheel .
+          ls /tmp/wheel/perch_dashboard-*.whl
+
   package:
     name: Build .deb
     runs-on: ubuntu-latest
