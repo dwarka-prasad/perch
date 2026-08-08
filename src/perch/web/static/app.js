@@ -1972,11 +1972,28 @@ async function loadGit(){
           <button class="btn small" data-git="fetch" data-p="${esc(r.path)}">Fetch</button>
           <button class="btn small" data-git="pull" data-p="${esc(r.path)}">Pull</button>
           <button class="btn small" data-git="stash" data-p="${esc(r.path)}">Stash</button>
-          <button class="btn small" data-gitterm="${esc(r.path)}">Terminal</button></td></tr>`;
+          <button class="btn small" data-runp="${esc(r.path)}">Run…</button>
+          <button class="btn small" data-gitterm="${esc(r.path)}">Terminal</button>
+          <div class="runScripts" style="display:none;margin-top:6px;text-align:left"></div></td></tr>`;
     }).join("")||'<tr><td class="muted" style="padding:12px">no git repos found in your home</td></tr>';
     document.querySelectorAll("[data-git]").forEach(b=>b.onclick=()=>runJob(
       api("/api/gitaction",{method:"POST",
         body:JSON.stringify({path:b.dataset.p,action:b.dataset.git})})));
+    document.querySelectorAll("[data-runp]").forEach(b=>b.onclick=async()=>{
+      const box=b.parentElement.querySelector(".runScripts");
+      if(box.style.display==="block"){box.style.display="none";return;}
+      box.style.display="block";box.innerHTML='<span class="muted" style="font-size:12px">loading…</span>';
+      try{
+        const s=await api("/api/projectscripts?path="+encodeURIComponent(b.dataset.runp));
+        box.innerHTML=s.scripts.length?s.scripts.map(x=>
+          `<button class="btn small" data-rk="${esc(x.kind)}" data-rn="${esc(x.name)}"
+            title="${esc(x.cmd)}">${esc(x.kind)}: ${esc(x.name)}</button>`).join(" ")
+          :'<span class="muted" style="font-size:12px">no package.json / Makefile scripts found</span>';
+        box.querySelectorAll("[data-rk]").forEach(sb=>sb.onclick=()=>runJob(
+          api("/api/projectrun",{method:"POST",body:JSON.stringify(
+            {path:b.dataset.runp,kind:sb.dataset.rk,name:sb.dataset.rn})})));
+      }catch(e){box.innerHTML='<span class="muted">'+esc(e.message)+'</span>';}
+    });
     document.querySelectorAll("[data-gitterm]").forEach(b=>b.onclick=async()=>{
       try{await api("/api/terminal",{method:"POST",body:JSON.stringify({path:b.dataset.gitterm})});
         toast("terminal opened");}catch(e){toast(e.message,false);}});

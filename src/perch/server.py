@@ -1527,6 +1527,57 @@ def git_action(path, action):
     raise ValueError("unknown git action")
 
 
+def project_scripts(path):
+    """Runnable tasks a repo declares — npm/yarn/pnpm scripts, Make targets,
+    common Python entrypoints — so the Git tab can launch them."""
+    path = os.path.realpath(path)
+    if not path.startswith(HOME) or not os.path.isdir(path):
+        raise ValueError("path not in your home")
+    scripts = []
+    pj = os.path.join(path, "package.json")
+    if os.path.isfile(pj):
+        try:
+            with open(pj) as f:
+                data = json.load(f)
+            runner = ("pnpm" if os.path.exists(os.path.join(path, "pnpm-lock.yaml"))
+                      else "yarn" if os.path.exists(os.path.join(path, "yarn.lock"))
+                      else "npm")
+            for name in list(data.get("scripts", {}))[:30]:
+                scripts.append({"kind": runner, "name": name,
+                                "cmd": f"{runner} run {name}"})
+        except (OSError, ValueError):
+            pass
+    mk = next((m for m in ("Makefile", "makefile", "GNUmakefile")
+               if os.path.isfile(os.path.join(path, m))), None)
+    if mk:
+        with open(os.path.join(path, mk)) as f:
+            for line in f:
+                m = re.match(r"^([a-zA-Z][\w.-]*)\s*:(?!=)", line)
+                if m and m.group(1) not in ("PHONY",):
+                    tgt = m.group(1)
+                    if tgt not in [s["name"] for s in scripts]:
+                        scripts.append({"kind": "make", "name": tgt,
+                                        "cmd": f"make {tgt}"})
+    if os.path.isfile(os.path.join(path, "manage.py")):
+        scripts.append({"kind": "python", "name": "runserver",
+                        "cmd": "python3 manage.py runserver"})
+    return {"scripts": scripts[:40]}
+
+
+def project_run(path, kind, name):
+    path = os.path.realpath(path)
+    if not path.startswith(HOME) or not os.path.isdir(path):
+        raise ValueError("path not in your home")
+    avail = project_scripts(path)["scripts"]
+    match = next((s for s in avail if s["kind"] == kind and s["name"] == name),
+                 None)
+    if not match:
+        raise ValueError("unknown script for this project")
+    cmd = "cd " + _sh_quote(path) + " && " + match["cmd"]
+    return start_job(["sh", "-c", cmd],
+                     f"{match['cmd']} — {os.path.basename(path)}")
+
+
 # ---------------------------------------------------- docker (extended) ------
 
 
@@ -3714,6 +3765,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(timers_list())
             if route == "/api/sshkeys":
                 return self._json(ssh_keys())
+            if route == "/api/projectscripts":
+                return self._json(project_scripts(qs.get("path", [""])[0]))
             if route == "/api/updates":
                 return self._json(pkg_updates(qs.get("force", ["0"])[0] == "1"))
             if route == "/api/procinfo":
@@ -3897,6 +3950,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(http_store_save(body))
             if route == "/api/gitaction":
                 return self._json(git_action(body["path"], body["action"]))
+            if route == "/api/projectrun":
+                return self._json(project_run(body["path"], body["kind"],
+                                              body["name"]))
             if route == "/api/composeaction":
                 return self._json(docker_compose_action(body["project"],
                                                         body["action"]))
