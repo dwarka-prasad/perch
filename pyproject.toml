@@ -1,47 +1,9 @@
+# Package metadata is in setup.cfg (declarative), NOT a [project] table here:
+# old system setuptools (<61) ignores PEP 621 metadata and would silently
+# build UNKNOWN-0.0.0. setup.cfg works everywhere from setuptools 30 up.
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=40", "wheel"]
 build-backend = "setuptools.build_meta"
-
-[project]
-name = "perch-dashboard"
-version = "1.0.0"
-description = "Perch — a local system + developer dashboard for Linux"
-readme = "README.md"
-requires-python = ">=3.8"
-license = { text = "MIT" }
-authors = [{ name = "Perch contributors" }]
-keywords = ["dashboard", "system-monitor", "linux", "devtools", "psutil"]
-classifiers = [
-    "Environment :: Console",
-    "Environment :: Web Environment",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: POSIX :: Linux",
-    "Programming Language :: Python :: 3",
-    "Topic :: System :: Monitoring",
-]
-dependencies = ["psutil>=5.9", "PyYAML>=5.4"]
-
-[project.optional-dependencies]
-office = ["python-docx>=1.0", "openpyxl>=3.1"]
-desktop = ["PyGObject>=3.42"]
-
-[project.urls]
-Homepage = "https://github.com/dwarka-prasad/perch"
-Issues = "https://github.com/dwarka-prasad/perch/issues"
-
-[project.scripts]
-perch = "perch.server:main"
-perch-desktop = "perch.desktop:main"
-
-[tool.setuptools]
-package-dir = { "" = "src" }
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.setuptools.package-data]
-perch = ["web/index.html", "web/static/*"]
 
 [tool.ruff]
 line-length = 100
