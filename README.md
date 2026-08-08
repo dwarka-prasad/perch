@@ -55,7 +55,7 @@ step, no cloud.
   any process in a detail modal, browse the journal live, read kernel
   tunables, and see pending APT updates with a sidebar badge.
 
-![Monitor tab — alert rules, 24 h history chart, and outbound alert channels](docs/monitor.png)
+![Tab tour — Overview, Monitor alerts & 24 h history, Storage analyzer, developer Tools, and desktop Settings](docs/tour.gif)
 
 ### Manage storage & files
 - **Storage** — disk usage plus a folder-size analyzer to find what's eating
