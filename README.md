@@ -46,8 +46,9 @@ step, no cloud.
 ### Monitor the system
 - **Overview** — live charts for CPU, memory, GPU, disk I/O, temperatures and
   network, plus a hardware panel (model/BIOS, battery health & cycles, Wi-Fi
-  signal) and a critical-log panel. The home screen is customizable with
-  drag-to-reorder widgets.
+  signal), a critical-log panel, and a **health scorecard** (score out of 100
+  with plain-language findings and one-click fixes). The home screen is
+  customizable with drag-to-reorder widgets.
 - **Monitor** — threshold alerts (CPU/mem/disk/temp…) with desktop
   notifications and outbound channels (ntfy, Slack, Discord, generic
   webhook), log-pattern watchers, and 24 h of one-minute history.
@@ -59,7 +60,9 @@ step, no cloud.
 
 ### Manage storage & files
 - **Storage** — disk usage plus a folder-size analyzer to find what's eating
-  space; a **Clean up** tab for caches and trash.
+  space, and a **backup helper** (rsync folders to another drive, on demand or
+  a daily/weekly schedule); a **Clean up** tab for caches and trash with an
+  optional weekly auto tidy-up.
 - **Files** — a full file browser with previews (images, PDF, video, audio,
   Word, Excel), open-with, bulk trash, set-as-wallpaper, and a side drawer
   containing a text editor (with vim mode) and a sketch canvas.
@@ -67,20 +70,27 @@ step, no cloud.
   Perch's own index (no `locate` needed).
 
 ### Developer tools
+- **Terminal** — a real shell in the browser (a proper pty, not a command box),
+  running as you in your home directory.
 - **Network** — listening ports with kill-by-port, public IP, and a speed
   test.
 - **Dev** — Docker containers with live stats, logs, shell, compose control
   and prune; systemd user services; toolchain overview.
-- **Git** — a dashboard of your repos: branch, dirty state, ahead/behind,
-  with fetch/pull/stash actions.
+- **Database** — browse SQLite files and PostgreSQL (host `psql` or a running
+  container), read-only by default with opt-in writes.
+- **Git** — a dashboard of your repos: branch, dirty state, ahead/behind, with
+  fetch/pull/stash, and a **project launcher** that runs the repo's own
+  npm/yarn/pnpm scripts or Make targets as live jobs.
 - **API client** — a mini-Postman: collections, environments with
   `{{variables}}`, request history, multi-step **flows** you can run and
   export, and import from Postman collections, curl commands, or raw HTTP.
-- **Runtimes** — detect installed language runtimes and switch defaults
-  (rustup, `update-alternatives`).
+- **Runtimes** — detect installed language runtimes, switch defaults (rustup,
+  `update-alternatives`), and manage **SSH keys** (list, fingerprint, copy
+  public key, generate ed25519).
 - **Tools** — JSON format/sort/extract, YAML ↔ JSON, base64/URL/epoch/UUID/
   JWT/SHA-256 converters, regex tester, text diff, cron explainer, color and
-  case converters, secret generator, and website screenshot preview.
+  case converters, secret generator, website screenshot preview, and a
+  **scheduled-tasks manager** (edit crontab, enable/disable systemd timers).
 
 ### AI assistant
 - Chat about your machine with a live system snapshot injected, and generate
@@ -97,18 +107,23 @@ step, no cloud.
   interface/monospace/document fonts with antialiasing & hinting, titlebar
   buttons, clock format, animations, hot corner, workspaces, and mouse /
   touchpad pointer speed.
-- **Packages** — search, install, remove and upgrade via apt and snap. A
-  system password dialog (`pkexec`) appears for privileged actions.
+- **Packages** — search, install, remove and upgrade across your native
+  package manager (**apt, dnf, pacman or zypper**, auto-detected) plus **snap**
+  and **flatpak** when present. A system password dialog (`pkexec`) appears for
+  privileged actions.
 
 Everything is reachable through a **Ctrl+K command palette**, and the grouped
 sidebar shows live CPU/MEM/DISK mini-bars. Integrations that aren't installed
-on your machine hide themselves automatically.
+on your machine hide themselves automatically — and a **Simple mode** toggle
+(in Settings) hides the developer tabs entirely for a monitoring-and-settings
+dashboard aimed at non-technical users.
 
 ## Installation
 
 ### Requirements
 
-- Linux (developed on Ubuntu/GNOME; desktop-control features assume GNOME)
+- Linux — package management works on apt/dnf/pacman/zypper; the Settings and
+  Tweaks tabs assume GNOME and hide themselves elsewhere
 - **Required:** Python ≥ 3.8, `psutil`, `PyYAML` (`psutil` auto-installs on
   first run if missing)
 - **Optional:** `python-docx` + `openpyxl` (Word/Excel preview), PyGObject +
@@ -184,15 +199,24 @@ State (search index, alert history, screenshots) lives under
 ## Security
 
 Perch binds to `127.0.0.1` and every request needs the token from
-`~/.perch-token`. Privileged actions (package install, upgrades) go through
+`~/.perch-token`. On first visit the URL token is exchanged for an
+`HttpOnly`, `SameSite=Strict` cookie and the URL is cleaned, so the token
+stops living in browser history; repeated bad tokens from one address are
+locked out. Privileged actions (package install, upgrades) go through
 `pkexec`, which shows a system password dialog — credentials are never stored
-or handled by Perch. Writes from the file editor/sketch are restricted to your
-home directory. Review the code before exposing it beyond localhost.
+or handled by Perch. The web terminal and database browser run as your user;
+writes from the file editor/sketch are restricted to your home directory.
+Review the code before exposing it beyond localhost.
 
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Backend is one organised module;
 frontend is plain HTML/CSS/JS with no build step. `make help` lists tasks.
+Run the tests with:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
 
 ## Releasing
 
