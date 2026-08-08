@@ -652,7 +652,30 @@ $("#ovCards")&&$("#ovCards").addEventListener("dragover",e=>{
   else $("#ovCards").appendChild(dragEl);});
 
 /* ---- runtimes ---- */
+async function loadSsh(){
+  try{
+    const s=await api("/api/sshkeys");
+    $("#sshList").innerHTML=(s.keys.length?s.keys.map(k=>`
+      <div style="padding:6px 0;border-bottom:1px solid var(--grid)">
+        <b class="mono" style="font-size:12px">${esc(k.name)}</b>
+        <span class="muted" style="font-size:11px">${esc(k.fingerprint)}</span>
+        <button class="btn small" data-cp="${esc(k.public)}">copy public key</button>
+        <div class="mono" style="font-size:10.5px;word-break:break-all;color:var(--muted);margin-top:2px">${esc(k.public)}</div>
+      </div>`).join(""):'<span class="muted">no keys yet</span>')
+      +(s.authorized_keys?`<div style="margin-top:8px"><b>authorized_keys</b>
+        <pre class="mono" style="font-size:10.5px;white-space:pre-wrap;background:var(--track);padding:8px;border-radius:6px;max-height:140px;overflow:auto">${esc(s.authorized_keys)}</pre></div>`:"");
+    document.querySelectorAll("[data-cp]").forEach(b=>b.onclick=()=>{
+      navigator.clipboard.writeText(b.dataset.cp);toast("public key copied");});
+  }catch(e){}
+}
+$("#sshGen")&&($("#sshGen").onclick=async()=>{
+  try{await api("/api/sshkeygen",{method:"POST",body:JSON.stringify(
+    {name:$("#sshName").value.trim()||"id_ed25519",comment:$("#sshComment").value.trim()})});
+    $("#sshStat").textContent="key created ✓";$("#sshName").value="";loadSsh();}
+  catch(e){$("#sshStat").textContent="";toast(e.message,false);}
+});
 async function loadRuntimes(){
+  loadSsh();
   try{
     const r=await api("/api/runtimes");
     $("#rtTable tbody").innerHTML=r.tools.map(t=>`

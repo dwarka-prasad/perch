@@ -3109,6 +3109,54 @@ def timer_action(unit, action):
     return timers_list()
 
 
+SSH_DIR = os.path.join(HOME, ".ssh")
+
+
+def ssh_keys():
+    keys = []
+    try:
+        names = sorted(os.listdir(SSH_DIR))
+    except OSError:
+        names = []
+    for name in names:
+        pub = os.path.join(SSH_DIR, name)
+        if not name.endswith(".pub") or not os.path.isfile(pub):
+            continue
+        with open(pub) as f:
+            content = f.read().strip()
+        r = _run(["ssh-keygen", "-lf", pub], capture_output=True, text=True)
+        fp = r.stdout.strip() if r.returncode == 0 else ""
+        keys.append({"name": name, "public": content, "fingerprint": fp,
+                     "has_private": os.path.isfile(pub[:-4])})
+    auth = ""
+    try:
+        with open(os.path.join(SSH_DIR, "authorized_keys")) as f:
+            auth = f.read()
+    except OSError:
+        pass
+    return {"keys": keys, "authorized_keys": auth,
+            "installed": bool(shutil.which("ssh-keygen"))}
+
+
+def ssh_keygen(name, comment):
+    if not re.fullmatch(r"[a-zA-Z0-9._-]{1,40}", name):
+        raise ValueError("bad key name")
+    if not shutil.which("ssh-keygen"):
+        raise ValueError("ssh-keygen is not installed")
+    os.makedirs(SSH_DIR, exist_ok=True)
+    os.chmod(SSH_DIR, 0o700)
+    path = os.path.join(SSH_DIR, name)
+    if os.path.exists(path) or os.path.exists(path + ".pub"):
+        raise ValueError("a key with that name already exists")
+    who = pwd.getpwuid(os.getuid()).pw_name
+    comment = re.sub(r"[^\w@.\-]", "", comment)[:60] or f"{who}@perch"
+    r = _run(["ssh-keygen", "-t", "ed25519", "-f", path, "-N", "",
+              "-C", comment], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise ValueError((r.stderr.strip() or "ssh-keygen failed")[:300])
+    return ssh_keys()
+
+
 def pg_containers():
     """Running containers whose image looks like Postgres — for a quick picker."""
     if not shutil.which("docker"):
@@ -3664,6 +3712,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(crontab_get())
             if route == "/api/timers":
                 return self._json(timers_list())
+            if route == "/api/sshkeys":
+                return self._json(ssh_keys())
             if route == "/api/updates":
                 return self._json(pkg_updates(qs.get("force", ["0"])[0] == "1"))
             if route == "/api/procinfo":
@@ -3833,6 +3883,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(crontab_set(body.get("text", "")))
             if route == "/api/timeraction":
                 return self._json(timer_action(body["unit"], body["action"]))
+            if route == "/api/sshkeygen":
+                return self._json(ssh_keygen(body.get("name", ""),
+                                             body.get("comment", "")))
             if route == "/api/openwith":
                 return self._json({"ok": True,
                                    "app": open_with(body["app"], body["path"])})

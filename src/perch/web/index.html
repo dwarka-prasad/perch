@@ -605,6 +605,13 @@
       <div class="muted" style="font-size:12px;margin-top:8px">Switching the
         active version needs admin rights — a password dialog appears, output
         shows in the job box.</div></div>
+    <div class="panel"><h2>SSH keys <span class="muted">— ~/.ssh</span></h2>
+      <div id="sshList" class="muted">—</div>
+      <div class="row" style="margin-top:10px;margin-bottom:0">
+        <input type="text" id="sshName" class="mono" style="width:150px" placeholder="id_ed25519">
+        <input type="text" id="sshComment" style="flex:1;min-width:150px" placeholder="comment (e.g. you@host)">
+        <button class="btn" id="sshGen">Generate ed25519</button>
+        <span class="muted" id="sshStat" style="font-size:12px"></span></div></div>
   </section>
 
   <section id="tab-users">
