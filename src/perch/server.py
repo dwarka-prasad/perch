@@ -1606,6 +1606,38 @@ def _gset(schema, key):
     return r.stdout.strip().strip("'") if r.returncode == 0 else None
 
 
+def _gbool(schema, key):
+    v = _gset(schema, key)
+    return None if v is None else v == "true"
+
+
+def _gnum(schema, key):
+    v = _gset(schema, key)
+    if v is None:
+        return None
+    v = re.sub(r"^\s*u?int\d+\s+", "", v)  # drop a "uint32 "/"int64 " type tag
+    m = re.search(r"-?\d+(?:\.\d+)?", v)
+    if not m:
+        return None
+    return float(m.group()) if "." in m.group() else int(m.group())
+
+
+def _gset_write(schema, key, val):
+    subprocess.run(["gsettings", "set", schema, key, val], capture_output=True)
+
+
+_TOUCHPAD = "org.gnome.desktop.peripherals.touchpad"
+_COLOR = "org.gnome.settings-daemon.plugins.color"
+_IFACE = "org.gnome.desktop.interface"
+_POWER = "org.gnome.settings-daemon.plugins.power"
+
+
+def _power_profile():
+    r = subprocess.run(["powerprofilesctl", "get"], capture_output=True,
+                       text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
 def get_settings():
     # brightness via GNOME session bus (no root)
     bright = None
@@ -1643,8 +1675,21 @@ def get_settings():
         "brightness": bright,
         "volume": vol, "muted": muted,
         "bluetooth": bt, "wifi": wifi,
-        "theme": _gset("org.gnome.desktop.interface", "color-scheme"),
+        "theme": _gset(_IFACE, "color-scheme"),
         "wallpaper": _gset("org.gnome.desktop.background", "picture-uri"),
+        "power_profile": _power_profile(),
+        "power_profiles": ["power-saver", "balanced", "performance"],
+        "night_light": _gbool(_COLOR, "night-light-enabled"),
+        "night_temp": _gnum(_COLOR, "night-light-temperature"),
+        "dnd": (lambda b: None if b is None else not b)(
+            _gbool("org.gnome.desktop.notifications", "show-banners")),
+        "battery_pct": _gbool(_IFACE, "show-battery-percentage"),
+        "tap_click": _gbool(_TOUCHPAD, "tap-to-click"),
+        "natural_scroll": _gbool(_TOUCHPAD, "natural-scroll"),
+        "text_scale": _gnum(_IFACE, "text-scaling-factor"),
+        "idle_blank": _gnum("org.gnome.desktop.session", "idle-delay"),
+        "suspend_ac": _gnum(_POWER, "sleep-inactive-ac-timeout"),
+        "slideshow": slideshow_state(),
     }
 
 
@@ -1698,7 +1743,133 @@ def set_setting(key, value):
                             "org.gnome.desktop.background", k, uri],
                            capture_output=True)
         return {"wallpaper": uri}
+    if key == "power_profile":
+        if value not in ("power-saver", "balanced", "performance"):
+            raise ValueError("bad power profile")
+        subprocess.run(["powerprofilesctl", "set", value], capture_output=True)
+        return {"power_profile": value}
+    if key == "night_light":
+        _gset_write(_COLOR, "night-light-enabled",
+                    "true" if value else "false")
+        return {"night_light": bool(value)}
+    if key == "night_temp":
+        _gset_write(_COLOR, "night-light-temperature",
+                    f"uint32 {max(1700, min(6500, int(value)))}")
+        return {"night_temp": int(value)}
+    if key == "dnd":
+        _gset_write("org.gnome.desktop.notifications", "show-banners",
+                    "false" if value else "true")
+        return {"dnd": bool(value)}
+    if key == "battery_pct":
+        _gset_write(_IFACE, "show-battery-percentage",
+                    "true" if value else "false")
+        return {"battery_pct": bool(value)}
+    if key == "tap_click":
+        _gset_write(_TOUCHPAD, "tap-to-click", "true" if value else "false")
+        return {"tap_click": bool(value)}
+    if key == "natural_scroll":
+        _gset_write(_TOUCHPAD, "natural-scroll", "true" if value else "false")
+        return {"natural_scroll": bool(value)}
+    if key == "text_scale":
+        _gset_write(_IFACE, "text-scaling-factor",
+                    str(max(0.5, min(2.0, float(value)))))
+        return {"text_scale": float(value)}
+    if key == "idle_blank":
+        _gset_write("org.gnome.desktop.session", "idle-delay",
+                    f"uint32 {max(0, int(value))}")
+        return {"idle_blank": int(value)}
+    if key == "suspend_ac":
+        secs = max(0, int(value))
+        _gset_write(_POWER, "sleep-inactive-ac-timeout", str(secs))
+        _gset_write(_POWER, "sleep-inactive-ac-type",
+                    "nothing" if secs == 0 else "suspend")
+        return {"suspend_ac": secs}
     raise ValueError("unknown setting")
+
+
+# ----------------------------------------------------- wallpaper slideshow ---
+
+SLIDESHOW_FILE = os.path.join(CFG_DIR, "slideshow.json")
+_slide_stop = threading.Event()
+_slide_thread = [None]
+
+
+def _slide_cfg():
+    try:
+        with open(SLIDESHOW_FILE) as f:
+            c = json.load(f)
+    except (OSError, ValueError):
+        c = {}
+    return {"enabled": bool(c.get("enabled")),
+            "folder": c.get("folder", os.path.join(HOME, "Pictures")),
+            "interval": int(c.get("interval", 300)),
+            "shuffle": bool(c.get("shuffle", True))}
+
+
+def _slide_images(folder):
+    try:
+        return sorted(os.path.join(folder, f) for f in os.listdir(folder)
+                      if preview_kind(f) == "image")
+    except OSError:
+        return []
+
+
+def _slide_loop():
+    idx = 0
+    while not _slide_stop.wait(1):
+        cfg = _slide_cfg()
+        if not cfg["enabled"]:
+            return
+        imgs = _slide_images(cfg["folder"])
+        if not imgs:
+            _slide_stop.wait(cfg["interval"])
+            continue
+        if cfg["shuffle"]:
+            pick = imgs[secrets.randbelow(len(imgs))]
+        else:
+            pick = imgs[idx % len(imgs)]
+            idx += 1
+        uri = "file://" + urllib.parse.quote(pick)
+        for k in ("picture-uri", "picture-uri-dark"):
+            _gset_write("org.gnome.desktop.background", k, uri)
+        _slide_stop.wait(cfg["interval"])
+
+
+def _slide_start():
+    _slide_stop.clear()
+    if not (_slide_thread[0] and _slide_thread[0].is_alive()):
+        _slide_thread[0] = threading.Thread(target=_slide_loop, daemon=True)
+        _slide_thread[0].start()
+
+
+def slideshow_state():
+    c = _slide_cfg()
+    c["running"] = bool(_slide_thread[0] and _slide_thread[0].is_alive())
+    c["count"] = len(_slide_images(c["folder"]))
+    return c
+
+
+def slideshow_set(cfg):
+    os.makedirs(CFG_DIR, exist_ok=True)
+    cur = _slide_cfg()
+    if "folder" in cfg:
+        cur["folder"] = os.path.realpath(os.path.expanduser(cfg["folder"]))
+    if "interval" in cfg:
+        cur["interval"] = max(5, int(cfg["interval"]))
+    if "shuffle" in cfg:
+        cur["shuffle"] = bool(cfg["shuffle"])
+    cur["enabled"] = bool(cfg.get("enabled", cur["enabled"]))
+    with open(SLIDESHOW_FILE, "w") as f:
+        json.dump(cur, f)
+    if cur["enabled"]:
+        _slide_start()
+    else:
+        _slide_stop.set()
+    return slideshow_state()
+
+
+if _slide_cfg()["enabled"]:
+    _slide_start()
 
 
 # -------------------------------------------------------- open-with / IDE ----
@@ -2138,6 +2309,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(upgrade_all(body["mgr"]))
             if route == "/api/setsetting":
                 return self._json(set_setting(body["key"], body.get("value")))
+            if route == "/api/slideshow":
+                return self._json(slideshow_set(body))
             if route == "/api/openwith":
                 return self._json({"ok": True,
                                    "app": open_with(body["app"], body["path"])})

@@ -4,6 +4,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Perch</title>
 <link rel="stylesheet" href="/static/styles.css"></head><body>
+<canvas id="bgCanvas"></canvas>
 <div class="layout">
 <nav>
   <div class="brand">🐦 Perch
@@ -40,32 +41,34 @@
   <div class="sub" id="sysline">loading…</div>
 
   <section id="tab-overview" class="on">
-    <div class="cards">
-      <div class="card"><div class="k">CPU</div><div class="v" id="cpuV">–</div>
+    <div class="row" style="justify-content:flex-end;margin-bottom:6px">
+      <button class="btn small" id="ovCustomize">✎ Customize home</button>
+      <button class="btn small" id="ovReset" style="display:none">reset layout</button>
+    </div>
+    <div class="cards" id="ovCards">
+      <div class="card" data-tile="cpu"><div class="k">CPU</div><div class="v" id="cpuV">–</div>
         <div class="d" id="cpuD"></div><svg id="cpuS"></svg></div>
-      <div class="card"><div class="k">Memory</div><div class="v" id="memV">–</div>
+      <div class="card" data-tile="mem"><div class="k">Memory</div><div class="v" id="memV">–</div>
         <div class="d" id="memD"></div><svg id="memS"></svg></div>
-      <div class="card"><div class="k">Network</div><div class="v" id="netV">–</div>
+      <div class="card" data-tile="net"><div class="k">Network</div><div class="v" id="netV">–</div>
         <div class="d" id="netD"></div><svg id="netS"></svg>
         <div class="legend"><span><i class="sw" style="background:var(--s1)"></i>download</span>
         <span><i class="sw" style="background:var(--s2)"></i>upload</span></div></div>
-      <div class="card"><div class="k">GPU <span class="muted" id="gpuN" style="font-weight:400"></span></div>
+      <div class="card" data-tile="gpu"><div class="k">GPU <span class="muted" id="gpuN" style="font-weight:400"></span></div>
         <div class="v" id="gpuV">–</div><div class="d" id="gpuD"></div>
         <svg id="gpuS"></svg></div>
-      <div class="card"><div class="k">Per-core load</div>
+      <div class="card" data-tile="core"><div class="k">Per-core load</div>
         <div class="v" id="coreV">–</div><div class="d" id="coreD"></div>
         <div class="corebars" id="cores"></div></div>
-    </div>
-    <div class="cards">
-      <div class="card"><div class="k">Disk I/O</div><div class="v" id="dioV">–</div>
+      <div class="card" data-tile="disk"><div class="k">Disk I/O</div><div class="v" id="dioV">–</div>
         <div class="d" id="dioD"></div><svg id="dioS"></svg>
         <div class="legend"><span><i class="sw" style="background:var(--s1)"></i>read</span>
         <span><i class="sw" style="background:var(--s2)"></i>write</span></div></div>
-      <div class="card"><div class="k">Temperature</div><div class="v" id="tmpV">–</div>
+      <div class="card" data-tile="temp"><div class="k">Temperature</div><div class="v" id="tmpV">–</div>
         <div class="d" id="tmpD"></div><svg id="tmpS"></svg></div>
-      <div class="card"><div class="k">Battery</div><div class="v" id="batV">–</div>
+      <div class="card" data-tile="battery"><div class="k">Battery</div><div class="v" id="batV">–</div>
         <div class="d" id="batD"></div><div class="d" id="batH"></div></div>
-      <div class="card"><div class="k">Uptime</div><div class="v" id="upV">–</div>
+      <div class="card" data-tile="uptime"><div class="k">Uptime</div><div class="v" id="upV">–</div>
         <div class="d" id="loadD"></div><div class="d" id="npD"></div></div>
     </div>
     <div class="panel"><h2>This laptop</h2><div id="hwGrid" class="muted">…</div></div>
@@ -371,18 +374,49 @@
   <section id="tab-settings">
     <div class="panel"><h2>Display &amp; sound</h2>
       <div id="setDisplay" class="muted">loading…</div></div>
+    <div class="panel"><h2>Power &amp; session</h2>
+      <div id="setPower" class="muted">loading…</div></div>
+    <div class="panel"><h2>Night light</h2>
+      <div id="setNight" class="muted">loading…</div></div>
+    <div class="panel"><h2>Input &amp; notifications</h2>
+      <div id="setInput" class="muted">loading…</div></div>
     <div class="panel"><h2>Connectivity</h2>
       <div id="setConn" class="muted">loading…</div></div>
-    <div class="panel"><h2>Appearance</h2>
+    <div class="panel"><h2>Desktop appearance</h2>
       <div class="row"><span style="width:130px">GNOME theme</span>
         <div class="seg" id="setTheme">
           <button data-th="prefer-light">Light</button>
           <button data-th="default">Auto</button>
           <button data-th="prefer-dark">Dark</button></div></div>
-      <div class="row" style="margin-bottom:0"><span style="width:130px">Wallpaper</span>
+      <div class="row"><span style="width:130px">Wallpaper</span>
         <input type="text" id="wpPath" placeholder="/path/to/image.jpg (or browse in Files → “Set as wallpaper”)"
           style="flex:1;min-width:240px" class="mono">
-        <button class="btn small" id="wpSet">Apply</button></div></div>
+        <button class="btn small" id="wpSet">Apply</button></div>
+      <div class="row" style="margin-bottom:0;align-items:flex-start">
+        <span style="width:130px">Live wallpaper<br><span class="muted" style="font-size:11px">(slideshow)</span></span>
+        <div style="flex:1">
+          <div class="row"><input type="text" id="ssFolder" class="mono" style="flex:1;min-width:200px" placeholder="~/Pictures">
+            <span class="muted" id="ssCount" style="font-size:12px"></span></div>
+          <div class="row" style="margin-bottom:0">
+            <span class="muted" style="font-size:12px">every</span>
+            <select id="ssInterval" class="btn"><option value="30">30s</option>
+              <option value="60">1m</option><option value="300" selected>5m</option>
+              <option value="900">15m</option><option value="1800">30m</option>
+              <option value="3600">1h</option></select>
+            <label class="pill"><input type="checkbox" id="ssShuffle" checked> shuffle</label>
+            <button class="btn tog" id="ssToggle">⚪ Off</button></div>
+        </div></div></div>
+    <div class="panel"><h2>Dashboard theme <span class="muted">— this app's look</span></h2>
+      <div class="row"><span style="width:130px">Accent color</span>
+        <span id="accSwatches"></span>
+        <input type="color" id="accCustom" value="#2a78d6" style="width:34px;height:26px;border:none;background:none;cursor:pointer">
+        <button class="btn small" id="accReset">reset</button></div>
+      <div class="row" style="margin-bottom:0;align-items:flex-start"><span style="width:130px">Home background</span>
+        <div class="seg" id="bgPick">
+          <button data-bg="none">None</button>
+          <button data-bg="gradient">Gradient</button>
+          <button data-bg="aurora">Aurora (live)</button>
+          <button data-bg="particles">Particles (live)</button></div></div></div>
   </section>
 
   <section id="tab-runtimes">
