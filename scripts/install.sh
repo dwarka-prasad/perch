@@ -16,9 +16,12 @@ cat > ~/.config/systemd/user/perch.service <<EOF
 Description=Perch dashboard (http://127.0.0.1:9080)
 
 [Service]
+Type=notify
 Environment=PYTHONPATH=$SRC
 ExecStart=$PY -m perch
-Restart=on-failure
+Restart=always
+RestartSec=2
+WatchdogSec=90
 
 [Install]
 WantedBy=default.target

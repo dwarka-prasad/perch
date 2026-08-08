@@ -11,6 +11,7 @@ import pwd
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -24,8 +25,8 @@ try:
     import psutil
 except ImportError:  # self-install the only external dependency
     print("psutil missing — installing with pip --user …")
-    subprocess.run([sys.executable, "-m", "pip", "install", "--user",
-                    "psutil"], check=True)
+    subprocess.run([sys.executable, "-m", "pip", "install",
+                    "--user", "psutil"], check=True)
     import psutil
 
 PORT = int(os.environ.get("PERCH_PORT",
@@ -33,6 +34,59 @@ PORT = int(os.environ.get("PERCH_PORT",
 HOST = os.environ.get("PERCH_HOST", "127.0.0.1")
 HOME = os.path.expanduser("~")
 TOKEN_FILE = os.path.join(HOME, ".perch-token")
+
+_SUBPROC_TIMEOUT = 15
+_sp_run = subprocess.run
+
+
+def _run(cmd, **kw):
+    """subprocess.run with a default timeout so no request can hang."""
+    kw.setdefault("timeout", _SUBPROC_TIMEOUT)
+    try:
+        return _sp_run(cmd, **kw)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", "command timed out")
+
+
+def atomic_write(path, text, mode=0o600):
+    """Write text to path via a temp file + rename, so a crash mid-write
+    never leaves a truncated/corrupt file behind."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def _sd_notify(msg):
+    """Tell systemd we're alive (Type=notify + WatchdogSec)."""
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return
+    if addr.startswith("@"):
+        addr = "\0" + addr[1:]
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        s.sendto(msg.encode(), addr)
+        s.close()
+    except OSError:
+        pass
+
+
+# failed-auth lockout: 20 bad tokens in 10 min locks that address out
+_AUTH_FAILS = {}
+
+
+def _auth_fail(ip):
+    n, t0 = _AUTH_FAILS.get(ip, (0, time.time()))
+    if time.time() - t0 > 600:
+        n, t0 = 0, time.time()
+    _AUTH_FAILS[ip] = (n + 1, t0)
+
+
+def _auth_locked(ip):
+    n, t0 = _AUTH_FAILS.get(ip, (0, 0))
+    return n >= 20 and time.time() - t0 < 600
 BOOT = psutil.boot_time()
 
 
@@ -72,7 +126,7 @@ GPU_CARD = next((os.path.dirname(p) for p in
 
 def _gpu_name():
     try:
-        r = subprocess.run(["lspci"], capture_output=True, text=True, timeout=5)
+        r = _run(["lspci"], capture_output=True, text=True, timeout=5)
         for line in r.stdout.splitlines():
             if "VGA" in line or "3D" in line:
                 name = line.split(": ", 1)[1]
@@ -463,7 +517,7 @@ def trash_file(path):
     if not os.path.exists(path):
         raise ValueError("no such file")
     if shutil.which("gio"):
-        subprocess.run(["gio", "trash", path], check=True, capture_output=True)
+        _run(["gio", "trash", path], check=True, capture_output=True)
     else:
         tdir = os.path.join(HOME, ".local/share/Trash/files")
         os.makedirs(tdir, exist_ok=True)
@@ -493,7 +547,7 @@ def cleanup_report():
     targets.append({"id": "trash", "label": "Trash",
                     "path": trash, "size": quick_size(trash, deadline_each),
                     "desc": "Deleted files waiting in the trash bin."})
-    pipc = subprocess.run(["python3", "-m", "pip", "cache", "dir"],
+    pipc = _run(["python3", "-m", "pip", "cache", "dir"],
                           capture_output=True, text=True)
     pip_path = pipc.stdout.strip() if pipc.returncode == 0 else ""
     targets.append({"id": "pip", "label": "pip download cache",
@@ -515,7 +569,7 @@ def cleanup_report():
         pass
     # sudo-only items: report size + the command to run yourself
     sudo_items = []
-    j = subprocess.run(["journalctl", "--disk-usage"], capture_output=True,
+    j = _run(["journalctl", "--disk-usage"], capture_output=True,
                        text=True)
     if j.returncode == 0:
         sudo_items.append({"label": "systemd journal logs",
@@ -539,7 +593,7 @@ def do_clean(target, path=None):
         t = os.path.join(HOME, ".local/share/Trash")
         freed = quick_size(t)
         if shutil.which("gio"):
-            subprocess.run(["gio", "trash", "--empty"], capture_output=True)
+            _run(["gio", "trash", "--empty"], capture_output=True)
         for sub in ("files", "info"):
             d = os.path.join(t, sub)
             if os.path.isdir(d):
@@ -554,10 +608,10 @@ def do_clean(target, path=None):
                             pass
         return freed
     if target == "pip":
-        r = subprocess.run(["python3", "-m", "pip", "cache", "dir"],
+        r = _run(["python3", "-m", "pip", "cache", "dir"],
                            capture_output=True, text=True)
         freed = quick_size(r.stdout.strip()) if r.returncode == 0 else 0
-        subprocess.run(["python3", "-m", "pip", "cache", "purge"],
+        _run(["python3", "-m", "pip", "cache", "purge"],
                        capture_output=True)
         return freed
     if target == "cachedir":
@@ -610,7 +664,7 @@ def hw_info():
         }
     wifi = {}
     try:
-        r = subprocess.run(["nmcli", "-t", "-f", "active,ssid,signal",
+        r = _run(["nmcli", "-t", "-f", "active,ssid,signal",
                             "dev", "wifi"], capture_output=True, text=True,
                            timeout=6)
         for line in r.stdout.splitlines():
@@ -679,7 +733,7 @@ def build_index():
 def index_boot():
     if os.path.exists(INDEX_FILE):
         age = time.time() - os.path.getmtime(INDEX_FILE)
-        n = int(subprocess.run(["wc", "-l", INDEX_FILE], capture_output=True,
+        n = int(_run(["wc", "-l", INDEX_FILE], capture_output=True,
                                text=True).stdout.split()[0])
         INDEX_STATUS.update(state="ready", count=n,
                             built=os.path.getmtime(INDEX_FILE))
@@ -708,7 +762,7 @@ def search_files(q, limit=250, regex=False):
         grep_args = ["grep", "-i", "-E"]
     else:
         grep_args = ["grep", "-i", "-F"]
-    r = subprocess.run([*grep_args, "-m", str(limit * 4), "--", q,
+    r = _run([*grep_args, "-m", str(limit * 4), "--", q,
                         INDEX_FILE], capture_output=True, text=True, timeout=20)
     if regex and r.returncode == 2:
         raise ValueError("grep rejected that pattern (use POSIX extended "
@@ -800,7 +854,7 @@ def kill_port(port):
 
 
 def _docker_json(args, timeout=10):
-    r = subprocess.run(["docker", *args], capture_output=True, text=True,
+    r = _run(["docker", *args], capture_output=True, text=True,
                        timeout=timeout)
     if r.returncode != 0:
         raise ValueError((r.stderr.strip() or "docker unavailable")[:300])
@@ -824,7 +878,7 @@ DOCKER_ACTIONS = {"start", "stop", "restart", "rm"}
 def docker_action(cid, action):
     if action not in DOCKER_ACTIONS or not re.fullmatch(r"[0-9a-f]{4,64}", cid):
         raise ValueError("bad docker action")
-    r = subprocess.run(["docker", action, cid], capture_output=True, text=True,
+    r = _run(["docker", action, cid], capture_output=True, text=True,
                        timeout=60)
     if r.returncode != 0:
         raise ValueError(r.stderr.strip()[:300])
@@ -834,7 +888,7 @@ def docker_action(cid, action):
 def docker_logs(cid):
     if not re.fullmatch(r"[0-9a-f]{4,64}", cid):
         raise ValueError("bad container id")
-    r = subprocess.run(["docker", "logs", "--tail", "150", cid],
+    r = _run(["docker", "logs", "--tail", "150", cid],
                        capture_output=True, text=True, timeout=15)
     return {"logs": (r.stdout + r.stderr)[-20000:]}
 
@@ -846,7 +900,7 @@ SVC_RE = re.compile(r"^[\w@.\\:-]+\.service$")
 
 def services():
     def list_units(scope, extra=()):
-        r = subprocess.run(["systemctl", scope, "list-units", "--type=service",
+        r = _run(["systemctl", scope, "list-units", "--type=service",
                             "--all", "--no-pager", "--output=json", *extra],
                            capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
@@ -864,7 +918,7 @@ def services():
 def service_action(name, action):
     if action not in ("start", "stop", "restart") or not SVC_RE.fullmatch(name):
         raise ValueError("bad service action")
-    r = subprocess.run(["systemctl", "--user", action, name],
+    r = _run(["systemctl", "--user", action, name],
                        capture_output=True, text=True, timeout=30)
     if r.returncode != 0:
         raise ValueError(r.stderr.strip()[:300])
@@ -891,7 +945,7 @@ def devinfo():
         if not shutil.which(cmd[0]):
             continue
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+            r = _run(cmd, capture_output=True, text=True, timeout=8)
             line = (r.stdout or r.stderr).strip().splitlines()
             if line:
                 tools.append({"tool": label, "version": line[0][:80]})
@@ -899,7 +953,7 @@ def devinfo():
             continue
     git_id = {}
     for k in ("user.name", "user.email"):
-        r = subprocess.run(["git", "config", "--global", k],
+        r = _run(["git", "config", "--global", k],
                            capture_output=True, text=True)
         git_id[k] = r.stdout.strip()
     return {"tools": tools, "git": git_id}
@@ -1024,7 +1078,7 @@ def read_logs(source="system", n=150, q="", prio="", cursor=""):
         args += ["-g", q]
     if prio:
         args += ["-p", prio]
-    r = subprocess.run(args, capture_output=True, text=True, timeout=20)
+    r = _run(args, capture_output=True, text=True, timeout=20)
     if r.returncode != 0 and not r.stdout:
         raise ValueError((r.stderr.strip() or "journalctl failed")[:200])
     entries, last_cursor = [], cursor
@@ -1100,7 +1154,7 @@ def ask_ai(prompt, include_snapshot=True, reset=False, extra=""):
         if AI_SESSION["id"]:
             args += ["--resume", AI_SESSION["id"]]
         args.append(full)
-        r = subprocess.run(args, capture_output=True, text=True, timeout=240,
+        r = _run(args, capture_output=True, text=True, timeout=240,
                            cwd=HOME)
         if r.returncode != 0:
             raise ValueError((r.stderr.strip() or "claude failed")[:400])
@@ -1188,8 +1242,7 @@ def llm_save(body):
         cfg["api_key"] = str(body["api_key"]).strip()
     if body.get("clear_key"):
         cfg["api_key"] = ""
-    with open(_llm_file(), "w") as f:
-        json.dump(cfg, f)
+    atomic_write(_llm_file(), json.dumps(cfg))
     os.chmod(_llm_file(), 0o600)
     return llm_public()
 
@@ -1299,8 +1352,7 @@ def http_store_save(body):
     for k in ("collections", "environments", "active_env", "flows"):
         if k in body:
             s[k] = body[k]
-    with open(_http_file(), "w") as f:
-        json.dump(s, f)
+    atomic_write(_http_file(), json.dumps(s))
     return s
 
 
@@ -1309,8 +1361,7 @@ def http_history_add(entry):
     s["history"].insert(0, entry)
     s["history"] = s["history"][:50]
     os.makedirs(CFG_DIR, exist_ok=True)
-    with open(_http_file(), "w") as f:
-        json.dump(s, f)
+    atomic_write(_http_file(), json.dumps(s))
 
 
 # ------------------------------------------------------- git projects --------
@@ -1320,7 +1371,7 @@ GIT_SKIP = {"node_modules", ".cache", "snap", ".local", ".cargo", ".rustup",
 
 
 def _git(path, *args, timeout=15):
-    return subprocess.run(["git", "-C", path, *args], capture_output=True,
+    return _run(["git", "-C", path, *args], capture_output=True,
                           text=True, timeout=timeout)
 
 
@@ -1388,7 +1439,7 @@ def git_action(path, action):
 
 
 def docker_stats():
-    r = subprocess.run(["docker", "stats", "--no-stream", "--format",
+    r = _run(["docker", "stats", "--no-stream", "--format",
                         "{{json .}}"], capture_output=True, text=True,
                        timeout=15)
     rows = []
@@ -1404,7 +1455,7 @@ def docker_stats():
 
 
 def docker_compose_projects():
-    r = subprocess.run(["docker", "ps", "-a", "--format", "{{json .}}"],
+    r = _run(["docker", "ps", "-a", "--format", "{{json .}}"],
                        capture_output=True, text=True, timeout=10)
     projects = {}
     for line in r.stdout.splitlines():
@@ -1497,8 +1548,7 @@ def mon_save(new):
         if k in new:
             cfg[k]["on"] = bool(new[k].get("on"))
             cfg[k]["th"] = float(new[k].get("th", cfg[k]["th"]))
-    with open(MON_CFG_FILE, "w") as f:
-        json.dump(cfg, f)
+    atomic_write(MON_CFG_FILE, json.dumps(cfg))
     return cfg
 
 
@@ -1537,8 +1587,7 @@ def notify_save(body):
     if "channels" in body:
         cfg["channels"] = [c for c in body["channels"]
                            if c.get("type") and c.get("url")][:12]
-    with open(_notify_file(), "w") as f:
-        json.dump(cfg, f)
+    atomic_write(_notify_file(), json.dumps(cfg))
     os.chmod(_notify_file(), 0o600)
     return cfg
 
@@ -1737,8 +1786,7 @@ def logwatch_save(body):
                           "path": r.get("path", ""),
                           "enabled": bool(r.get("enabled", True))})
         cfg["rules"] = clean
-    with open(_logwatch_file(), "w") as f:
-        json.dump(cfg, f)
+    atomic_write(_logwatch_file(), json.dumps(cfg))
     if cfg["enabled"]:
         _logwatch_start()
     else:
@@ -1749,7 +1797,7 @@ def logwatch_save(body):
 def _lw_journal_lines(source, since_iso):
     flags = {"system": ["--system"], "user": ["--user"],
              "kernel": ["--system", "-k"]}.get(source, ["--system"])
-    r = subprocess.run(["journalctl", *flags, "-o", "cat", "--no-pager",
+    r = _run(["journalctl", *flags, "-o", "cat", "--no-pager",
                         "--since", since_iso], capture_output=True, text=True,
                        timeout=15)
     return r.stdout.splitlines()
@@ -1881,7 +1929,7 @@ _upd_cache = {"t": 0.0, "data": None}
 def apt_updates(force=False):
     if not force and _upd_cache["data"] and time.time() - _upd_cache["t"] < 600:
         return _upd_cache["data"]
-    r = subprocess.run(["apt", "list", "--upgradable"], capture_output=True,
+    r = _run(["apt", "list", "--upgradable"], capture_output=True,
                        text=True, timeout=30,
                        env={**os.environ, "LC_ALL": "C"})
     pkgs = []
@@ -2101,11 +2149,11 @@ def pkg_search(q):
     if len(q) < 2:
         return {"apt": [], "snap": []}
     apt = []
-    r = subprocess.run(["apt-cache", "search", "--names-only", q],
+    r = _run(["apt-cache", "search", "--names-only", q],
                        capture_output=True, text=True, timeout=20,
                        env={**os.environ, "LC_ALL": "C"})
     installed = set()
-    ri = subprocess.run(["dpkg-query", "-f", "${Package}\n", "-W"],
+    ri = _run(["dpkg-query", "-f", "${Package}\n", "-W"],
                         capture_output=True, text=True)
     installed = set(ri.stdout.split())
     for line in r.stdout.splitlines()[:40]:
@@ -2115,11 +2163,11 @@ def pkg_search(q):
             apt.append({"name": name, "desc": desc[:120],
                         "installed": name in installed})
     snap = []
-    rs = subprocess.run(["snap", "find", q], capture_output=True, text=True,
+    rs = _run(["snap", "find", q], capture_output=True, text=True,
                         timeout=25, env={**os.environ, "LC_ALL": "C"})
     lines = rs.stdout.splitlines()
     snap_inst = set()
-    rsl = subprocess.run(["snap", "list"], capture_output=True, text=True)
+    rsl = _run(["snap", "list"], capture_output=True, text=True)
     for ln in rsl.stdout.splitlines()[1:]:
         snap_inst.add(ln.split()[0])
     for line in lines[1:21]:
@@ -2164,7 +2212,7 @@ def upgrade_all(mgr):
 
 
 def _gset(schema, key):
-    r = subprocess.run(["gsettings", "get", schema, key],
+    r = _run(["gsettings", "get", schema, key],
                        capture_output=True, text=True)
     return r.stdout.strip().strip("'") if r.returncode == 0 else None
 
@@ -2186,7 +2234,7 @@ def _gnum(schema, key):
 
 
 def _gset_write(schema, key, val):
-    subprocess.run(["gsettings", "set", schema, key, val], capture_output=True)
+    _run(["gsettings", "set", schema, key, val], capture_output=True)
 
 
 _TOUCHPAD = "org.gnome.desktop.peripherals.touchpad"
@@ -2221,7 +2269,7 @@ def _tweak_options():
         except OSError:
             pass
     fonts = set()
-    r = subprocess.run(["fc-list", ":", "family"], capture_output=True,
+    r = _run(["fc-list", ":", "family"], capture_output=True,
                        text=True)
     if r.returncode == 0:
         for line in r.stdout.splitlines():
@@ -2264,7 +2312,7 @@ _TITLEBAR_LAYOUTS = {
 
 
 def _power_profile():
-    r = subprocess.run(["powerprofilesctl", "get"], capture_output=True,
+    r = _run(["powerprofilesctl", "get"], capture_output=True,
                        text=True)
     return r.stdout.strip() if r.returncode == 0 else None
 
@@ -2272,7 +2320,7 @@ def _power_profile():
 def get_settings():
     # brightness via GNOME session bus (no root)
     bright = None
-    r = subprocess.run(["gdbus", "call", "--session", "--dest",
+    r = _run(["gdbus", "call", "--session", "--dest",
                         "org.gnome.SettingsDaemon.Power", "--object-path",
                         "/org/gnome/SettingsDaemon/Power", "--method",
                         "org.freedesktop.DBus.Properties.Get",
@@ -2282,23 +2330,23 @@ def get_settings():
     if m and int(m.group(1)) >= 0:
         bright = int(m.group(1))
     vol, muted = None, None
-    rv = subprocess.run(["pactl", "get-sink-volume", "@DEFAULT_SINK@"],
+    rv = _run(["pactl", "get-sink-volume", "@DEFAULT_SINK@"],
                         capture_output=True, text=True)
     mv = re.search(r"(\d+)%", rv.stdout)
     if mv:
         vol = int(mv.group(1))
-    rm = subprocess.run(["pactl", "get-sink-mute", "@DEFAULT_SINK@"],
+    rm = _run(["pactl", "get-sink-mute", "@DEFAULT_SINK@"],
                         capture_output=True, text=True)
     muted = "yes" in rm.stdout
     bt = None
-    rb = subprocess.run(["bluetoothctl", "show"], capture_output=True,
+    rb = _run(["bluetoothctl", "show"], capture_output=True,
                         text=True, timeout=6)
     if "Powered: yes" in rb.stdout:
         bt = True
     elif "Powered: no" in rb.stdout:
         bt = False
     wifi = None
-    rw = subprocess.run(["nmcli", "radio", "wifi"], capture_output=True,
+    rw = _run(["nmcli", "radio", "wifi"], capture_output=True,
                         text=True)
     if rw.returncode == 0:
         wifi = rw.stdout.strip() == "enabled"
@@ -2347,7 +2395,7 @@ def get_settings():
 def set_setting(key, value):
     if key == "brightness":
         v = max(5, min(100, int(value)))
-        subprocess.run(["gdbus", "call", "--session", "--dest",
+        _run(["gdbus", "call", "--session", "--dest",
                         "org.gnome.SettingsDaemon.Power", "--object-path",
                         "/org/gnome/SettingsDaemon/Power", "--method",
                         "org.freedesktop.DBus.Properties.Set",
@@ -2356,30 +2404,30 @@ def set_setting(key, value):
         return {"brightness": v}
     if key == "volume":
         v = max(0, min(150, int(value)))
-        subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@",
+        _run(["pactl", "set-sink-volume", "@DEFAULT_SINK@",
                         f"{v}%"], capture_output=True)
         return {"volume": v}
     if key == "mute":
-        subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@",
+        _run(["pactl", "set-sink-mute", "@DEFAULT_SINK@",
                         "toggle"], capture_output=True)
         return {"ok": True}
     if key == "theme":
         if value not in ("prefer-dark", "prefer-light", "default"):
             raise ValueError("bad theme")
-        subprocess.run(["gsettings", "set", "org.gnome.desktop.interface",
+        _run(["gsettings", "set", "org.gnome.desktop.interface",
                         "color-scheme", value], capture_output=True)
-        subprocess.run(["gsettings", "set", "org.gnome.desktop.interface",
+        _run(["gsettings", "set", "org.gnome.desktop.interface",
                         "gtk-theme",
                         "Yaru-dark" if value == "prefer-dark" else "Yaru"],
                        capture_output=True)
         return {"theme": value}
     if key == "bluetooth":
-        subprocess.run(["bluetoothctl", "power",
+        _run(["bluetoothctl", "power",
                         "on" if value else "off"], capture_output=True,
                        timeout=6)
         return {"bluetooth": bool(value)}
     if key == "wifi":
-        subprocess.run(["nmcli", "radio", "wifi",
+        _run(["nmcli", "radio", "wifi",
                         "on" if value else "off"], capture_output=True)
         return {"wifi": bool(value)}
     if key == "wallpaper":
@@ -2390,14 +2438,14 @@ def set_setting(key, value):
             raise ValueError("not an image file")
         uri = "file://" + urllib.parse.quote(path)
         for k in ("picture-uri", "picture-uri-dark"):
-            subprocess.run(["gsettings", "set",
+            _run(["gsettings", "set",
                             "org.gnome.desktop.background", k, uri],
                            capture_output=True)
         return {"wallpaper": uri}
     if key == "power_profile":
         if value not in ("power-saver", "balanced", "performance"):
             raise ValueError("bad power profile")
-        subprocess.run(["powerprofilesctl", "set", value], capture_output=True)
+        _run(["powerprofilesctl", "set", value], capture_output=True)
         return {"power_profile": value}
     if key == "night_light":
         _gset_write(_COLOR, "night-light-enabled",
@@ -2546,8 +2594,7 @@ def slideshow_set(cfg):
     if "shuffle" in cfg:
         cur["shuffle"] = bool(cfg["shuffle"])
     cur["enabled"] = bool(cfg.get("enabled", cur["enabled"]))
-    with open(SLIDESHOW_FILE, "w") as f:
-        json.dump(cur, f)
+    atomic_write(SLIDESHOW_FILE, json.dumps(cur))
     if cur["enabled"]:
         _slide_start()
     else:
@@ -2611,11 +2658,10 @@ def site_shot(url):
     chrome = shutil.which("google-chrome") or shutil.which("chromium-browser")
     if not chrome:
         raise ValueError("chrome not installed")
-    r = subprocess.run([chrome, "--headless=new", "--disable-gpu",
+    r = _run([chrome, "--headless=new", "--disable-gpu",
                         "--hide-scrollbars", "--window-size=1280,1400",
-                        f"--screenshot={out}",
-                        "--virtual-time-budget=6000", url],
-                       capture_output=True, text=True, timeout=45)
+                        f"--screenshot={out}", "--virtual-time-budget=6000",
+                        url], timeout=90, capture_output=True, text=True)
     if not os.path.exists(out):
         raise ValueError((r.stderr.strip()[-200:]) or "screenshot failed")
     return {"path": out, "url": url}
@@ -2638,7 +2684,7 @@ def runtimes():
         if not shutil.which(cmd[0]):
             continue
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+            r = _run(cmd, capture_output=True, text=True, timeout=8)
             line = (r.stdout or r.stderr).strip().splitlines()
             out.append({"name": label, "version": line[0][:70] if line else "?",
                         "path": shutil.which(cmd[0])})
@@ -2647,7 +2693,7 @@ def runtimes():
     rust_tc = []
     rust_active = None
     if shutil.which("rustup"):
-        r = subprocess.run(["rustup", "toolchain", "list"],
+        r = _run(["rustup", "toolchain", "list"],
                            capture_output=True, text=True)
         for ln in r.stdout.splitlines():
             tc = ln.split()[0]
@@ -2669,14 +2715,14 @@ def alternatives():
     the general 'switch the active version of a tool' mechanism (java, python,
     editor, browsers, …). Switching needs root, so it runs via pkexec."""
     groups = []
-    r = subprocess.run(["update-alternatives", "--get-selections"],
+    r = _run(["update-alternatives", "--get-selections"],
                        capture_output=True, text=True)
     for line in r.stdout.splitlines():
         parts = line.split()
         if len(parts) < 3:
             continue
         name, mode, current = parts[0], parts[1], parts[2]
-        rl = subprocess.run(["update-alternatives", "--list", name],
+        rl = _run(["update-alternatives", "--list", name],
                             capture_output=True, text=True)
         opts = [o for o in rl.stdout.splitlines() if o]
         if len(opts) > 1:
@@ -2845,21 +2891,46 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _cookie_token(self):
+        for part in self.headers.get("Cookie", "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == "perch_t":
+                return v
+        return ""
+
     def _authed(self, qs):
-        tok = self.headers.get("X-Token") or (qs.get("t", [""])[0])
-        return secrets.compare_digest(tok, TOKEN)
+        ip = self.client_address[0]
+        if _auth_locked(ip):
+            return False
+        tok = (self.headers.get("X-Token") or qs.get("t", [""])[0]
+               or self._cookie_token())
+        if not secrets.compare_digest(tok, TOKEN):
+            _auth_fail(ip)
+            return False
+        return True
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         qs = urllib.parse.parse_qs(parsed.query)
         route = parsed.path
+        if route == "/api/health":
+            return self._json({"ok": True})
         if route.startswith("/static/"):
             return self._static(route[len("/static/"):])
         if route == "/":
             if not self._authed(qs):
-                self._send(403, "<h3>Forbidden — open the exact URL printed by "
-                                "dashboard.py (it contains the access token).</h3>",
+                self._send(403, "<h3>Forbidden — open the exact URL printed "
+                                "at startup (it contains the access token).",
                            "text/html")
+                return
+            if qs.get("t"):
+                # move the URL token into an HttpOnly cookie + clean the URL
+                self.send_response(303)
+                self.send_header("Set-Cookie", f"perch_t={TOKEN}; HttpOnly; "
+                                 "SameSite=Strict; Path=/")
+                self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
                 return
             self._send(200, render_index(TOKEN), "text/html")
             return
@@ -3102,11 +3173,27 @@ class Handler(BaseHTTPRequestHandler):
 
 
 
+def _watchdog_loop():
+    """Ping systemd's watchdog only while our own HTTP endpoint answers."""
+    import urllib.request
+    target = "127.0.0.1" if HOST in ("0.0.0.0", "::") else HOST
+    while True:
+        time.sleep(20)
+        try:
+            urllib.request.urlopen(
+                f"http://{target}:{PORT}/api/health", timeout=5)
+            _sd_notify("WATCHDOG=1")
+        except OSError:
+            pass  # skip the ping — systemd restarts us if it keeps failing
+
+
 def main():
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     url = f"http://{HOST}:{PORT}/?t={TOKEN}"
     print(f"Perch running on {HOST}:{PORT} (token-protected)")
     print("  " + url)
+    _sd_notify("READY=1")
+    threading.Thread(target=_watchdog_loop, daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

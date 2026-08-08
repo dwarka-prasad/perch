@@ -3,9 +3,11 @@ Description=Perch dashboard (http://127.0.0.1:9080)
 Documentation=https://github.com/dwarka-prasad/perch
 
 [Service]
+Type=notify
 ExecStart=/usr/bin/perch
-Restart=on-failure
-RestartSec=3
+Restart=always
+RestartSec=2
+WatchdogSec=90
 
 [Install]
 WantedBy=default.target
