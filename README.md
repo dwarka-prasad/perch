@@ -4,6 +4,9 @@
 
 **Your machine, at a glance.**
 
+[![CI](https://github.com/your-org/perch/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/perch/actions/workflows/ci.yml)
+![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
+
 A local system + developer dashboard for Linux — monitoring, ops, a full
 developer toolbox, and an AI assistant, in one token-protected web app that
 runs on `127.0.0.1`.
@@ -106,6 +109,20 @@ home directory. Review the code before exposing it beyond localhost.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Backend is one organised module;
 frontend is plain HTML/CSS/JS with no build step. `make help` lists tasks.
+
+## Releasing
+
+CI (`.github/workflows/ci.yml`) lints, compiles, and builds the `.deb` and
+Docker image on every push/PR. To cut a release, bump the version in
+`packaging/debian/control` + `pyproject.toml`, then:
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+`release.yml` then builds the `.deb`, pushes the image to
+`ghcr.io/<owner>/perch`, and publishes a GitHub Release with the `.deb`
+attached.
 
 ## License
 

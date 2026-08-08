@@ -1,0 +1,52 @@
+name: Release
+
+# Tag a release:  git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # create the GitHub Release
+  packages: write   # push the image to GHCR
+
+jobs:
+  release:
+    name: Build .deb + image, publish release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ctl=$(sed -n 's/^Version: //p' packaging/debian/control)
+          echo "tag=$tag control=$ctl"
+          if [ "$tag" != "$ctl" ]; then
+            echo "::error::tag v$tag != debian/control Version $ctl"; exit 1
+          fi
+
+      - name: Build .deb
+        run: bash packaging/build-deb.sh
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}:latest
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*.deb

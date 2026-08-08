@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint & syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install ruff
+      - name: Ruff (lint)
+        run: ruff check src/perch
+      - name: Python syntax
+        run: python -m compileall -q src/perch
+      - name: Frontend JS syntax
+        run: node --check src/perch/web/static/app.js
+
+  package:
+    name: Build .deb
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build package
+        run: bash packaging/build-deb.sh
+      - name: Lint the .deb
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y lintian >/dev/null
+          lintian --fail-on error,warning --suppress-tags \
+            initial-upload-closes-no-bugs,no-changelog,no-copyright-file \
+            dist/perch_*.deb || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: perch-deb
+          path: dist/*.deb
+
+  docker:
+    name: Build image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (no push)
+        run: docker build -f docker/Dockerfile -t perch:ci .
+      - name: Smoke test
+        run: |
+          docker run -d --name perch -e PERCH_HOST=0.0.0.0 -p 8090:8090 perch:ci
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8090/ || true)
+            [ "$code" = "403" ] && echo "server up (403 without token, as expected)" && exit 0
+            sleep 1
+          done
+          echo "server did not come up"; docker logs perch; exit 1

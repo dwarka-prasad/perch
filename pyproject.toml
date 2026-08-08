@@ -42,3 +42,12 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 perch = ["web/index.html", "web/static/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+# Core correctness rules (pycodestyle errors/warnings, pyflakes). The broader
+# opinionated sets (PL/SIM/…) are intentionally not enabled for this codebase.
+select = ["E", "F", "W"]
