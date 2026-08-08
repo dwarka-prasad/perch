@@ -55,7 +55,7 @@ headless and open the printed URL.
 
 ```bash
 git clone https://github.com/your-org/perch && cd perch
-make install-user                # editable install + user service + launcher
+make install-user                # user service + app launcher (no pip, no root)
 ```
 
 ### Docker (headless host monitoring)
