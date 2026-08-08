@@ -324,6 +324,21 @@
 
   <section id="tab-storage">
     <div class="panel"><h2>Mounted disks</h2><div id="diskList"></div></div>
+    <div class="panel"><h2>Backup <span class="muted">— copy folders somewhere safe (rsync)</span></h2>
+      <div class="row" style="align-items:flex-start">
+        <span style="width:130px">Folders<br><span class="muted" style="font-size:11px">one per line</span></span>
+        <textarea id="bkSources" class="mono" rows="3" style="flex:1;min-width:240px"
+          placeholder="~/Documents&#10;~/Pictures"></textarea></div>
+      <div class="row"><span style="width:130px">Copy to</span>
+        <input type="text" id="bkDest" class="mono" style="flex:1;min-width:240px"
+          placeholder="/media/you/usb-drive/laptop-backup"></div>
+      <div class="row" style="margin-bottom:0"><span style="width:130px">Schedule</span>
+        <select id="bkSched" class="btn"><option value="off">Manual only</option>
+          <option value="daily">Every day</option><option value="weekly">Every week</option></select>
+        <button class="btn" id="bkSave">💾 Save</button>
+        <button class="btn small" id="bkRun">▶ Back up now</button>
+        <span class="muted" id="bkStat" style="font-size:12px"></span></div>
+      <div class="muted" id="bkLast" style="font-size:11.5px;margin-top:6px"></div></div>
     <div class="panel"><h2>What's taking space? <span class="muted">— folder size analyzer</span></h2>
       <div class="row">
         <div class="crumbs" id="duCrumbs"></div>
@@ -587,6 +602,12 @@
       <table id="cacheTop"><tbody></tbody></table></div>
     <div class="panel"><h2>System-level (needs sudo — run in a terminal)</h2>
       <div id="sudoList" class="muted">…</div></div>
+    <div class="panel"><h2>Automatic tidy-up</h2>
+      <div class="row" style="margin-bottom:0">
+        <button class="btn" id="maintTog">⚪ Off</button>
+        <span class="muted" style="font-size:12.5px">once a week, clear the
+          thumbnail and pip caches and send a desktop notification</span>
+        <span class="muted" id="maintNext" style="font-size:12px"></span></div></div>
   </section>
 </main></div>
 <div id="jobBox" style="display:none;position:fixed;bottom:16px;left:50%;

@@ -2815,6 +2815,152 @@ def slideshow_state():
     return c
 
 
+# ------------------------------------------------- backup & maintenance ------
+# Simple rsync folder backups plus a weekly tidy-up job, both driven by
+# systemd *user* timers written to ~/.config/systemd/user.
+
+BACKUP_CFG = os.path.join(CFG_DIR, "backup.json")
+BACKUP_STATE = os.path.join(MON_DIR, "backup-state.json")
+
+
+def _user_unit_dir():
+    d = os.path.join(HOME, ".config/systemd/user")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _install_user_timer(name, desc, exec_cmd, calendar):
+    d = _user_unit_dir()
+    atomic_write(os.path.join(d, name + ".service"),
+                 f"[Unit]\nDescription={desc}\n\n[Service]\nType=oneshot\n"
+                 f"ExecStart={exec_cmd}\n", 0o644)
+    atomic_write(os.path.join(d, name + ".timer"),
+                 f"[Unit]\nDescription={desc} (timer)\n\n[Timer]\n"
+                 f"OnCalendar={calendar}\nPersistent=true\n\n"
+                 "[Install]\nWantedBy=timers.target\n", 0o644)
+    _run(["systemctl", "--user", "daemon-reload"])
+    _run(["systemctl", "--user", "enable", "--now", name + ".timer"])
+
+
+def _remove_user_timer(name):
+    _run(["systemctl", "--user", "disable", "--now", name + ".timer"])
+    d = _user_unit_dir()
+    for ext in (".service", ".timer"):
+        try:
+            os.remove(os.path.join(d, name + ext))
+        except OSError:
+            pass
+    _run(["systemctl", "--user", "daemon-reload"])
+
+
+def _timer_state(name):
+    en = _run(["systemctl", "--user", "is-enabled", name + ".timer"],
+              capture_output=True, text=True)
+    enabled = en.stdout.strip() == "enabled"
+    nxt = ""
+    if enabled:
+        r = _run(["systemctl", "--user", "list-timers", name + ".timer",
+                  "--no-legend"], capture_output=True, text=True)
+        parts = r.stdout.split()
+        nxt = " ".join(parts[:4]) if parts else ""
+    return {"enabled": enabled, "next": nxt}
+
+
+def backup_cfg():
+    cfg = {"sources": [], "dest": "", "schedule": "off"}
+    try:
+        with open(BACKUP_CFG) as f:
+            cfg.update(json.load(f))
+    except (OSError, ValueError):
+        pass
+    return cfg
+
+
+def _backup_inner(cfg):
+    import shlex
+    srcs = " ".join(shlex.quote(s) for s in cfg["sources"])
+    dest = shlex.quote(cfg["dest"])
+    state = shlex.quote(BACKUP_STATE)
+    return (f"rsync -a --relative {srcs} {dest} && "
+            "printf '{\"t\": %s, \"ok\": true}' \"$(date +%s)\" > " + state)
+
+
+def backup_get():
+    st = {}
+    try:
+        with open(BACKUP_STATE) as f:
+            st = json.load(f)
+    except (OSError, ValueError):
+        pass
+    return {**backup_cfg(), "last": st,
+            "timer": _timer_state("perch-backup"),
+            "rsync": bool(shutil.which("rsync"))}
+
+
+def backup_set(body):
+    sources = [os.path.realpath(os.path.expanduser(p.strip()))
+               for p in body.get("sources", []) if p.strip()][:20]
+    missing = [p for p in sources if not os.path.exists(p)]
+    if missing:
+        raise ValueError("source not found: " + missing[0])
+    dest = os.path.realpath(os.path.expanduser(body.get("dest", "").strip()))
+    schedule = body.get("schedule", "off")
+    if schedule not in ("off", "daily", "weekly"):
+        raise ValueError("bad schedule")
+    if schedule != "off":
+        if not sources:
+            raise ValueError("add at least one source folder")
+        if not os.path.isdir(dest):
+            raise ValueError("destination folder does not exist")
+        if any(dest == s or dest.startswith(s + os.sep) for s in sources):
+            raise ValueError("destination must be outside the source folders")
+    cfg = {"sources": sources, "dest": dest, "schedule": schedule}
+    os.makedirs(CFG_DIR, exist_ok=True)
+    atomic_write(BACKUP_CFG, json.dumps(cfg))
+    if schedule == "off":
+        _remove_user_timer("perch-backup")
+    else:
+        _install_user_timer("perch-backup", "Perch backup",
+                            "/bin/sh -c " + _sh_quote(_backup_inner(cfg)),
+                            schedule)
+    return backup_get()
+
+
+def _sh_quote(s):
+    import shlex
+    return shlex.quote(s)
+
+
+def backup_run():
+    cfg = backup_cfg()
+    if not cfg["sources"]:
+        raise ValueError("add at least one source folder")
+    if not os.path.isdir(cfg["dest"]):
+        raise ValueError("destination folder does not exist")
+    if not shutil.which("rsync"):
+        raise ValueError("rsync is not installed")
+    return start_job(["sh", "-c", _backup_inner(cfg)], "Backup now")
+
+
+_MAINT_CMD = ("/bin/sh -c 'rm -rf \"$HOME/.cache/thumbnails\"/* ; "
+              "python3 -m pip cache purge >/dev/null 2>&1 ; "
+              "notify-send \"Perch\" \"Weekly tidy-up done: thumbnail + pip "
+              "caches cleared\" 2>/dev/null ; true'")
+
+
+def maintenance_get():
+    return _timer_state("perch-maintenance")
+
+
+def maintenance_set(enabled):
+    if enabled:
+        _install_user_timer("perch-maintenance", "Perch weekly tidy-up",
+                            _MAINT_CMD, "weekly")
+    else:
+        _remove_user_timer("perch-maintenance")
+    return maintenance_get()
+
+
 def slideshow_set(cfg):
     os.makedirs(CFG_DIR, exist_ok=True)
     cur = _slide_cfg()
@@ -3223,6 +3369,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(capabilities())
             if route == "/api/healthscore":
                 return self._json(health_score())
+            if route == "/api/backup":
+                return self._json(backup_get())
+            if route == "/api/maintenance":
+                return self._json(maintenance_get())
             if route == "/api/updates":
                 return self._json(pkg_updates(qs.get("force", ["0"])[0] == "1"))
             if route == "/api/procinfo":
@@ -3371,6 +3521,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(set_setting(body["key"], body.get("value")))
             if route == "/api/slideshow":
                 return self._json(slideshow_set(body))
+            if route == "/api/backup":
+                return self._json(backup_set(body))
+            if route == "/api/backuprun":
+                return self._json(backup_run())
+            if route == "/api/maintenance":
+                return self._json(maintenance_set(bool(body.get("enabled"))))
             if route == "/api/openwith":
                 return self._json({"ok": True,
                                    "app": open_with(body["app"], body["path"])})

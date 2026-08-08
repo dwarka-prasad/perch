@@ -860,7 +860,37 @@ loadHealth();setInterval(loadHealth,300000);
 
 /* ---- storage ---- */
 let showSmall=false;
+/* ---- backup helper ---- */
+async function loadBackup(){
+  try{
+    const b=await api("/api/backup");
+    $("#bkSources").value=(b.sources||[]).join("\n");
+    $("#bkDest").value=b.dest||"";
+    $("#bkSched").value=b.schedule||"off";
+    const last=b.last&&b.last.t?`Last backup: ${new Date(b.last.t*1000).toLocaleString()} ✓`
+      :"No backup has run yet.";
+    const nxt=b.timer&&b.timer.enabled?` · next scheduled: ${esc(b.timer.next)}`:"";
+    $("#bkLast").innerHTML=(b.rsync?"":"⚠ rsync is not installed — install it from the Packages tab. ")
+      +esc(last)+nxt;
+  }catch(e){}
+}
+function bkPayload(){
+  return {sources:$("#bkSources").value.split("\n").map(s=>s.trim()).filter(Boolean),
+    dest:$("#bkDest").value.trim(),schedule:$("#bkSched").value};
+}
+$("#bkSave")&&($("#bkSave").onclick=async()=>{
+  try{await api("/api/backup",{method:"POST",body:JSON.stringify(bkPayload())});
+    toast("backup settings saved");loadBackup();}
+  catch(e){toast(e.message,false);}
+});
+$("#bkRun")&&($("#bkRun").onclick=async()=>{
+  try{await api("/api/backup",{method:"POST",body:JSON.stringify(bkPayload())});
+    runJob(api("/api/backuprun",{method:"POST",body:"{}"}));
+    setTimeout(loadBackup,3000);}
+  catch(e){toast(e.message,false);}
+});
 async function loadStorage(){
+  loadBackup();
   const ds=await api("/api/disks");
   const big=ds.filter(d=>d.used>=500*2**20||d.mount==="/");
   const small=ds.filter(d=>!big.includes(d));
@@ -2378,7 +2408,21 @@ async function editInDrawer(path){
 }
 
 /* ---- cleanup ---- */
+/* ---- weekly auto tidy-up ---- */
+async function loadMaint(){
+  try{
+    const m=await api("/api/maintenance");
+    $("#maintTog").textContent=m.enabled?"🟢 On":"⚪ Off";
+    $("#maintNext").textContent=m.enabled&&m.next?`next: ${m.next}`:"";
+    $("#maintTog").onclick=async()=>{
+      try{await api("/api/maintenance",{method:"POST",
+        body:JSON.stringify({enabled:!m.enabled})});
+        toast(m.enabled?"auto tidy-up off":"auto tidy-up on — weekly");
+        loadMaint();}catch(e){toast(e.message,false);}};
+  }catch(e){}
+}
 async function loadClean(){
+  loadMaint();
   $("#cleanTargets").textContent="scanning sizes…";
   try{
     const c=await api("/api/cleanup");
