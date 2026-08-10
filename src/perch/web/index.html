@@ -11,33 +11,36 @@
   <div class="brand">🐦 Perch
     <span class="muted" style="font-size:10.5px;font-weight:400;display:block;
       margin-top:2px">Ctrl+K for anything</span></div>
-  <div class="ngroup">System</div>
-  <button data-tab="overview" class="active">📈 Overview</button>
-  <button data-tab="monitor">🚨 Monitor</button>
-  <button data-tab="proc">⚙️ Processes</button>
-  <button data-tab="logs">📜 Logs</button>
-  <button data-tab="kernel">🧬 Kernel</button>
-  <button data-tab="updates">📦 Updates <span class="badge" id="updBadge"></span></button>
-  <button data-tab="packages">🛒 Packages</button>
-  <button data-tab="settings">⚙️ Settings</button>
-  <button data-tab="users">👤 Users</button>
-  <div class="ngroup">Storage &amp; files</div>
-  <button data-tab="storage">💾 Storage</button>
-  <button data-tab="files">📁 Files</button>
-  <button data-tab="search">🔍 Search</button>
-  <button data-tab="clean">🧹 Clean up</button>
-  <div class="ngroup" id="ngDev">Developer</div>
-  <button data-tab="term">🖥️ Terminal</button>
-  <button data-tab="net">🌐 Network</button>
-  <button data-tab="dev">🧰 Dev</button>
-  <button data-tab="db">🗄️ Database</button>
-  <button data-tab="git">🔀 Git</button>
-  <button data-tab="api">📮 API client</button>
-  <button data-tab="runtimes">📚 Runtimes</button>
-  <button data-tab="tools">🔧 Tools</button>
-  <div class="ngroup">Assistant</div>
-  <button data-tab="ai">✨ AI</button>
-  <div class="spacer"></div>
+  <!-- own scroll container: the tab list scrolls independently of the page,
+       while brand / mini-stats / theme stay pinned -->
+  <div class="navscroll" id="navScroll">
+    <div class="ngroup">System</div>
+    <button data-tab="overview" class="active">📈 Overview</button>
+    <button data-tab="monitor">🚨 Monitor</button>
+    <button data-tab="proc">⚙️ Processes</button>
+    <button data-tab="logs">📜 Logs</button>
+    <button data-tab="kernel">🧬 Kernel</button>
+    <button data-tab="updates">📦 Updates <span class="badge" id="updBadge"></span></button>
+    <button data-tab="packages">🛒 Packages</button>
+    <button data-tab="settings">⚙️ Settings</button>
+    <button data-tab="users">👤 Users</button>
+    <div class="ngroup">Storage &amp; files</div>
+    <button data-tab="storage">💾 Storage</button>
+    <button data-tab="files">📁 Files</button>
+    <button data-tab="search">🔍 Search</button>
+    <button data-tab="clean">🧹 Clean up</button>
+    <div class="ngroup" id="ngDev">Developer</div>
+    <button data-tab="term">🖥️ Terminal</button>
+    <button data-tab="net">🌐 Network</button>
+    <button data-tab="dev">🧰 Dev</button>
+    <button data-tab="db">🗄️ Database</button>
+    <button data-tab="git">🔀 Git</button>
+    <button data-tab="api">📮 API client</button>
+    <button data-tab="runtimes">📚 Runtimes</button>
+    <button data-tab="tools">🔧 Tools</button>
+    <div class="ngroup">Assistant</div>
+    <button data-tab="ai">✨ AI</button>
+  </div>
   <div id="sbStats"></div>
   <button id="themeBtn">🌓 Theme</button>
 </nav>
@@ -47,50 +50,88 @@
 
   <section id="tab-overview" class="on">
     <div class="row" style="justify-content:flex-end;margin-bottom:6px">
+      <span class="muted" id="ovEditHint" style="font-size:12px;display:none;
+        margin-right:auto">drag to reorder · <b>S/M/L/▭</b> resizes · ✕ removes</span>
+      <button class="btn small" id="ovAdd" style="display:none">＋ Add widget</button>
       <button class="btn small" id="ovCustomize">✎ Customize home</button>
       <button class="btn small" id="ovReset" style="display:none">reset layout</button>
     </div>
-    <div class="cards" id="ovCards">
-      <div class="card" data-tile="cpu"><div class="k">CPU</div><div class="v" id="cpuV">–</div>
+    <!-- Every home item is a widget: data-w is its id, data-size its span.
+         Order, size and visibility are user-controlled (localStorage.perchHome);
+         widgets not in the default layout live in the ＋ Add widget gallery. -->
+    <div id="ovGrid">
+      <div class="card" data-w="cpu" data-size="s"><div class="k">CPU</div><div class="v" id="cpuV">–</div>
         <div class="d" id="cpuD"></div><svg id="cpuS"></svg></div>
-      <div class="card" data-tile="mem"><div class="k">Memory</div><div class="v" id="memV">–</div>
+      <div class="card" data-w="mem" data-size="s"><div class="k">Memory</div><div class="v" id="memV">–</div>
         <div class="d" id="memD"></div><svg id="memS"></svg></div>
-      <div class="card" data-tile="net"><div class="k">Network</div><div class="v" id="netV">–</div>
+      <div class="card" data-w="net" data-size="s"><div class="k">Network</div><div class="v" id="netV">–</div>
         <div class="d" id="netD"></div><svg id="netS"></svg>
         <div class="legend"><span><i class="sw" style="background:var(--s1)"></i>download</span>
         <span><i class="sw" style="background:var(--s2)"></i>upload</span></div></div>
-      <div class="card" data-tile="gpu"><div class="k">GPU <span class="muted" id="gpuN" style="font-weight:400"></span></div>
+      <div class="card" data-w="gpu" data-size="s"><div class="k">GPU <span class="muted" id="gpuN" style="font-weight:400"></span></div>
         <div class="v" id="gpuV">–</div><div class="d" id="gpuD"></div>
         <svg id="gpuS"></svg></div>
-      <div class="card" data-tile="core"><div class="k">Per-core load</div>
+      <div class="card" data-w="core" data-size="s"><div class="k">Per-core load</div>
         <div class="v" id="coreV">–</div><div class="d" id="coreD"></div>
         <div class="corebars" id="cores"></div></div>
-      <div class="card" data-tile="disk"><div class="k">Disk I/O</div><div class="v" id="dioV">–</div>
+      <div class="card" data-w="disk" data-size="s"><div class="k">Disk I/O</div><div class="v" id="dioV">–</div>
         <div class="d" id="dioD"></div><svg id="dioS"></svg>
         <div class="legend"><span><i class="sw" style="background:var(--s1)"></i>read</span>
         <span><i class="sw" style="background:var(--s2)"></i>write</span></div></div>
-      <div class="card" data-tile="temp"><div class="k">Temperature</div><div class="v" id="tmpV">–</div>
+      <div class="card" data-w="temp" data-size="s"><div class="k">Temperature</div><div class="v" id="tmpV">–</div>
         <div class="d" id="tmpD"></div><svg id="tmpS"></svg></div>
-      <div class="card" data-tile="battery"><div class="k">Battery</div><div class="v" id="batV">–</div>
+      <div class="card" data-w="battery" data-size="s"><div class="k">Battery</div><div class="v" id="batV">–</div>
         <div class="d" id="batD"></div><div class="d" id="batH"></div></div>
-      <div class="card" data-tile="uptime"><div class="k">Uptime</div><div class="v" id="upV">–</div>
+      <div class="card" data-w="uptime" data-size="s"><div class="k">Uptime</div><div class="v" id="upV">–</div>
         <div class="d" id="loadD"></div><div class="d" id="npD"></div></div>
+      <div class="panel" data-w="search" data-size="full"><h2>🔍 Find a file
+        <span class="muted">— searches the whole system by name</span></h2>
+        <div class="row" style="margin-bottom:0">
+          <input type="text" id="ovSq" placeholder="Start typing a file or folder name…"
+            style="flex:1;min-width:240px">
+          <label class="pill" title="POSIX extended regex, e.g. \.log$"><input
+            type="checkbox" id="ovSqRe"> regex</label>
+          <button class="btn small" id="ovSqFull">open full search</button>
+          <span class="muted" id="ovSqStatus" style="font-size:12px"></span>
+        </div>
+        <div id="ovSqOut" style="margin-top:8px"></div>
+      </div>
+      <div class="panel" data-w="health" data-size="full"><h2>🩺 Health check <span class="muted" id="hsVerdict"></span>
+        <button class="btn small" id="hsRefresh" style="margin-left:8px">re-check</button></h2>
+        <div id="hsBody" class="muted" style="font-size:12.5px">checking…</div></div>
+      <div class="panel" data-w="critlogs" data-size="full"><h2>⚠ Needs attention <span class="muted">— recent errors from the system log</span>
+        <button class="btn small" id="critMore" style="margin-left:8px">open Logs</button></h2>
+        <div id="critLogs" class="muted" style="font-size:12px">checking…</div></div>
+      <div class="panel" data-w="hw" data-size="full"><h2>This laptop</h2>
+        <div id="hwGrid" class="muted">…</div></div>
     </div>
-    <div class="panel"><h2>🩺 Health check <span class="muted" id="hsVerdict"></span>
-      <button class="btn small" id="hsRefresh" style="margin-left:8px">re-check</button></h2>
-      <div id="hsBody" class="muted" style="font-size:12.5px">checking…</div></div>
-    <div class="panel"><h2>⚠ Needs attention <span class="muted">— recent errors from the system log</span>
-      <button class="btn small" id="critMore" style="margin-left:8px">open Logs</button></h2>
-      <div id="critLogs" class="muted" style="font-size:12px">checking…</div></div>
-    <div class="panel"><h2>This laptop</h2><div id="hwGrid" class="muted">…</div></div>
   </section>
 
   <section id="tab-monitor">
+    <div class="panel" id="alertCtlPanel"><h2>Alerting
+      <span class="muted">— master switch for every rule below</span></h2>
+      <div class="row" style="margin-bottom:0">
+        <span class="pill" id="acState">…</span>
+        <button class="btn" id="acToggle">⏸ Stop alerts</button>
+        <span class="muted" style="font-size:12px">snooze</span>
+        <button class="btn small" data-snooze="15">15m</button>
+        <button class="btn small" data-snooze="60">1h</button>
+        <button class="btn small" data-snooze="240">4h</button>
+        <button class="btn small" data-snooze="1440">24h</button>
+        <span style="flex:1"></span>
+        <button class="btn small danger" id="acClear">🗑 Clear history</button>
+      </div>
+      <div class="muted" style="font-size:11.5px;margin-top:6px">While stopped,
+        no rule fires and nothing is written to the history — monitoring and the
+        24-hour chart keep running. A snooze resumes on its own. Test
+        notifications are always sent.</div></div>
     <div class="panel"><h2>Alert rules <span class="muted">— desktop notification
       when breached (10-min cooldown per rule)</span></h2>
       <table id="monRules"><tbody></tbody></table>
       <div class="row" style="margin-top:10px;margin-bottom:0">
         <button class="btn" id="monSave">💾 Save rules</button>
+        <button class="btn small" id="monAllOn">enable all</button>
+        <button class="btn small" id="monAllOff">disable all</button>
         <button class="btn small" id="monTest">🔔 Test notification</button>
         <span class="muted" id="monStat" style="font-size:12px"></span></div></div>
     <div class="panel"><h2>Last 24 hours <span class="muted">— 1-minute samples,
@@ -285,12 +326,22 @@
   </section>
 
   <section id="tab-net">
-    <div class="panel"><h2>Listening ports <span class="muted" id="estCount"></span></h2>
+    <div class="panel"><h2>Listening ports <span class="muted" id="estCount"></span>
+      <button class="btn small" id="netReload" style="margin-left:8px">↻</button></h2>
+      <div class="row"><input type="text" id="portQ"
+        placeholder="Filter by port, process or command…" style="flex:1;min-width:220px">
+        <label class="pill"><input type="checkbox" id="portPub"> only network-visible</label>
+      </div>
       <table id="ports"><thead><tr><th class="num">Port</th><th>Bind address</th>
-      <th>Exposure</th><th>Process</th><th class="num">PID</th><th></th></tr></thead>
+      <th>Exposure</th><th>Process</th><th class="num">PID</th>
+      <th>Stop the process</th></tr></thead>
       <tbody></tbody></table>
-      <div class="muted" style="font-size:12px;margin-top:8px">Process names show
-      only for your own processes (Linux hides others without root).
+      <div class="muted" style="font-size:12px;margin-top:8px"><b>Stop</b> asks the
+      listener to shut down (SIGTERM); <b>Force</b> kills it outright (SIGKILL) and
+      loses any unsaved state. Both act on the exact PID shown, so a port that got
+      re-bound in the meantime is never hit by mistake. Process names and the stop
+      buttons show only for your own processes — Linux hides other users' processes
+      without root, and for those Perch gives you the command to copy instead.
       0.0.0.0 / :: means the port accepts connections from the network, not just
       this machine.</div></div>
     <div class="panel"><h2>Network interfaces</h2><div id="ifaces"></div></div>
@@ -314,6 +365,13 @@
       <div id="dockerStats" style="margin-top:10px"></div>
       <div id="dockerCompose" style="margin-top:10px"></div>
       <div id="dockerImgs" style="margin-top:10px"></div></div>
+    <div class="panel" id="ctrPanel" style="display:none"><h2>Other container environments
+      <span class="muted">— detected on this machine</span>
+      <button class="btn small" id="ctrReload" style="margin-left:8px">↻</button></h2>
+      <div id="ctrBody" class="muted">detecting…</div>
+      <pre id="ctrLogs" class="mono" style="display:none;max-height:320px;
+        overflow:auto;background:var(--track);padding:10px;border-radius:8px;
+        white-space:pre-wrap;font-size:11.5px"></pre></div>
     <div class="panel"><h2>Services — your user scope <span class="muted">(system-failed shown below)</span></h2>
       <table id="svct"><tbody></tbody></table>
       <div id="svcFailed" style="margin-top:10px"></div></div>
@@ -695,6 +753,14 @@
 <div id="pal"><div id="palBox">
   <input id="palIn" placeholder="Jump to a tab, run an action, search files…" autocomplete="off">
   <div id="palList"></div>
+</div></div>
+<div id="ovGallery"><div id="ovGalBox">
+  <header><b style="font-size:14px">Add a widget</b>
+    <span class="muted" id="ovGalCount" style="font-size:12px"></span>
+    <span style="flex:1"></span>
+    <button class="btn small" id="ovGalClose">✕</button></header>
+  <input type="text" id="ovGalSearch" placeholder="Filter widgets…" autocomplete="off">
+  <div id="ovGalList"></div>
 </div></div>
 <div id="lightbox" style="display:none;position:fixed;inset:0;z-index:10;
   background:rgba(0,0,0,.75);align-items:center;justify-content:center;

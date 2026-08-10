@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.3.0
+
+- **A fully customizable home screen** — every item on Overview, the stat tiles
+  *and* the panels, is now a widget in one grid. In *Customize home* you can
+  drag any of them to reorder, cycle its size (**S / M / L / full width**) and
+  remove it; previously only the nine stat tiles could be moved or hidden and
+  the panels were fixed. **＋ Add widget** opens a searchable gallery of
+  everything available, including 13 widgets beyond the default layout: top
+  processes, disk usage, listening ports, containers & pods, recent alerts,
+  pending updates, failed services, git repositories, reclaimable space, quick
+  actions, a scratchpad, a clock and network interfaces. Anything you remove —
+  built-in tiles and panels included — returns to the gallery, so the home
+  screen can be emptied and rebuilt however you like. Widgets refresh at a
+  cadence matched to their cost (expensive scans load once behind a ↻ button)
+  and nothing is polled while the tab is hidden. Existing layouts migrate
+  automatically, so a home screen you had already arranged looks exactly as it
+  did; *reset layout* restores the default. Also reachable from Ctrl+K.
+- **Alert management with a stop/start switch** — the Monitor tab gained an
+  *Alerting* panel: stop alerts outright, snooze them for 15 min / 1 h / 4 h /
+  24 h (a snooze expires and resumes on its own), enable or disable every rule
+  in one click, and clear the recorded alert history. While alerting is off no
+  rule fires and nothing is written to the history, but sampling and the 24-hour
+  chart keep running — and test notifications are still sent. A rule that
+  breaches while alerting is stopped does not burn its cooldown, so it can fire
+  the moment you start alerts again. The state lives in
+  `~/.config/perch/alertctl.json`, survives restarts, and shows as 🔕 on the
+  sidebar from any tab. Also in the Ctrl+K palette.
+- **Sidebar scrolls independently of the page** — the tab list has its own
+  scroll container, so a long sidebar no longer forces the page to move (and
+  vice versa). Brand, CPU/MEM/DISK mini-bars and the theme button stay pinned;
+  on phones the same container scrolls sideways as before.
+- **File search on the home screen** — an overview panel searches the whole
+  system by filename (with regex), shows the top 8 hits inline with Open and
+  Browse, and hands off to the full Search tab on Enter. Same index as the
+  Search tab, so no extra cost.
+- **Stop the process holding a port, from Network** — the listening-ports table
+  now shows the owning user and the process's command line, filters by
+  port/process/command, can show only network-visible ports, and offers **Stop**
+  (SIGTERM) and **Force** (SIGKILL) per row. Both act on the exact PID shown, so
+  a port re-bound by something else in the meantime is never killed by mistake.
+  Perch's own port is labelled *Perch itself* instead of getting buttons, and
+  listeners owned by another user offer a `sudo kill` command to copy.
+- **Other container environments in Dev** — Perch now detects **Podman**,
+  **nerdctl**, **LXD/Incus** and **Kubernetes** alongside Docker and shows what
+  they're running: containers with start/stop/restart/remove/shell/logs, and
+  pods with namespace, ready count, restarts, node and logs (read-only). Podman's
+  JSON-array output and Docker's JSON-lines output are both handled. The panel
+  hides itself when nothing beyond Docker is installed, and an unreachable
+  cluster is reported rather than left to hang.
+- New endpoints: `GET /api/containers`, `GET /api/ctrlogs`,
+  `POST /api/ctraction`, `GET`/`POST /api/alertctl`, and
+  `GET /api/monitor?brief=1` (rules, alerting state and recent alerts without
+  the 1440-sample 24-hour history, so home widgets stay cheap).
+- Version metadata is now consistent across `setup.cfg`, `config.py`,
+  `__init__.py` and the Debian control file, which had drifted apart.
+
 ## 1.2.3
 
 - **"Open terminal / shell" now uses Perch's own terminal** — the *Terminal

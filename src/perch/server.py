@@ -818,17 +818,22 @@ def net_ports():
             established += 1
         if c.status != "LISTEN":
             continue
-        name, mine = None, False
+        name, mine, user, cmd = None, False, None, None
         if c.pid:
             if c.pid not in names:
                 try:
                     pr = psutil.Process(c.pid)
-                    names[c.pid] = (pr.name(), pr.uids().real == me)
+                    with pr.oneshot():
+                        names[c.pid] = (pr.name(), pr.uids().real == me,
+                                        pr.username(),
+                                        " ".join(pr.cmdline())[:200])
                 except psutil.Error:
-                    names[c.pid] = ("?", False)
-            name, mine = names[c.pid]
+                    names[c.pid] = ("?", False, None, None)
+            name, mine, user, cmd = names[c.pid]
         listen.append({"port": c.laddr.port, "addr": c.laddr.ip,
                        "pid": c.pid, "name": name, "mine": mine,
+                       "user": user, "cmd": cmd,
+                       "self": c.pid == os.getpid(),
                        "public": c.laddr.ip in ("0.0.0.0", "::")})
     listen.sort(key=lambda x: x["port"])
     seen, uniq = set(), []
@@ -849,11 +854,23 @@ def net_ports():
     return {"listen": uniq, "established": established, "ifaces": ifaces}
 
 
-def kill_port(port):
+def kill_port(port, force=False, pid=None):
+    """Stop whatever is listening on `port`.
+
+    `pid` (optional) pins the kill to the process the UI actually showed, so a
+    listener that died and had its port re-bound in between is never hit by
+    mistake.
+    """
     for c in psutil.net_connections(kind="inet"):
-        if c.status == "LISTEN" and c.laddr.port == port and c.pid:
-            name = kill_proc(c.pid)
-            return f"{name} (pid {c.pid})"
+        if c.status != "LISTEN" or c.laddr.port != port or not c.pid:
+            continue
+        if pid and c.pid != pid:
+            continue
+        name = kill_proc(c.pid, force)
+        return f"{name} (pid {c.pid})"
+    if pid:
+        raise ValueError(f"pid {pid} is no longer listening on port {port} "
+                         "— refresh the list")
     raise ValueError(f"no killable process found on port {port} "
                      "(root-owned listeners can't be ended from here)")
 
@@ -898,6 +915,191 @@ def docker_logs(cid):
         raise ValueError("bad container id")
     r = _run(["docker", "logs", "--tail", "150", cid],
                        capture_output=True, text=True, timeout=15)
+    return {"logs": (r.stdout + r.stderr)[-20000:]}
+
+
+# ------------------------------------------------- other container engines ---
+# Docker is handled above; this section detects whatever *else* is installed
+# (Podman, nerdctl, LXD, Kubernetes) and lists its containers/pods with the
+# same shape, so the Dev tab can render them all through one code path.
+
+CTR_ENGINES = ("docker", "podman", "nerdctl")
+CTR_ACTIONS = {"start", "stop", "restart", "rm"}
+CTR_ID_RE = re.compile(r"[0-9a-zA-Z][\w.-]{0,63}")
+K8S_NAME_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}")
+
+
+def _ctr_ports(ports):
+    """Normalise a ports field: docker gives a string, podman a list."""
+    if not isinstance(ports, list):
+        return str(ports or "")
+    out = []
+    for p in ports:
+        if not isinstance(p, dict):
+            out.append(str(p))
+            continue
+        host = p.get("host_port") or p.get("hostPort") or ""
+        cont = p.get("container_port") or p.get("containerPort") or ""
+        proto = p.get("protocol") or "tcp"
+        out.append(f"{host}->{cont}/{proto}" if host else f"{cont}/{proto}")
+    return ", ".join(str(x) for x in out)
+
+
+def _ctr_norm(c):
+    names = c.get("Names") or c.get("Name") or ""
+    if isinstance(names, list):
+        names = ", ".join(names)
+    state = str(c.get("State") or "").lower()
+    status = c.get("Status") or ""
+    if state in ("", "unknown"):
+        state = "running" if str(status).lower().startswith("up") else state
+    return {"id": str(c.get("ID") or c.get("Id") or "")[:64],
+            "name": names, "image": c.get("Image") or "",
+            "state": state, "status": str(status),
+            "ports": _ctr_ports(c.get("Ports"))}
+
+
+def _ctr_ps(engine):
+    """`<engine> ps -a` as a normalised list.
+
+    Docker/nerdctl honour the Go template and emit one JSON object per line;
+    Podman ignores it and emits a single JSON array — both are accepted.
+    """
+    r = _run([engine, "ps", "-a", "--format", "{{json .}}"],
+             capture_output=True, text=True, timeout=12)
+    if r.returncode != 0:
+        raise ValueError((r.stderr.strip() or engine + " unavailable")[:300])
+    text = (r.stdout or "").strip()
+    if not text:
+        return []
+    rows = (json.loads(text) if text[0] == "["
+            else [json.loads(x) for x in text.splitlines() if x.strip()])
+    return [_ctr_norm(c) for c in rows][:200]
+
+
+def _ctr_version(engine):
+    r = _run([engine, "--version"], capture_output=True, text=True, timeout=8)
+    lines = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()
+    return lines[0][:60] if lines else ""
+
+
+def _lxd_containers():
+    """LXD/Incus instances, if that client is installed and talking to a daemon."""
+    for binary in ("incus", "lxc"):
+        if not shutil.which(binary):
+            continue
+        r = _run([binary, "list", "--format", "json"],
+                 capture_output=True, text=True, timeout=12)
+        if r.returncode != 0 or not (r.stdout or "").strip():
+            continue
+        try:
+            rows = json.loads(r.stdout)
+        except ValueError:
+            continue
+        out = []
+        for i in rows[:200]:
+            # a stopped instance reports "state": null, so `or {}` at every hop
+            net = (i.get("state") or {}).get("network") or {}
+            ips = [a["address"] for iface, d in net.items() if iface != "lo"
+                   for a in (d.get("addresses") or [])
+                   if a.get("family") == "inet"]
+            out.append({"id": i.get("name", ""), "name": i.get("name", ""),
+                        "image": ((i.get("config") or {})
+                                  .get("image.description") or "")[:60],
+                        "state": str(i.get("status", "")).lower(),
+                        "status": i.get("status", ""), "ports": ", ".join(ips)})
+        return {"engine": binary, "kind": "lxd", "version": _ctr_version(binary),
+                "containers": out, "error": None}
+    return None
+
+
+def _k8s_pods():
+    """Pods from the current kubectl context, or None when there isn't one."""
+    if not shutil.which("kubectl"):
+        return None
+    r = _run(["kubectl", "config", "current-context"],
+             capture_output=True, text=True, timeout=6)
+    if r.returncode != 0:
+        return None
+    ctx = r.stdout.strip()
+    # --request-timeout keeps an unreachable cluster from stalling the panel
+    r = _run(["kubectl", "get", "pods", "--all-namespaces", "-o", "json",
+              "--request-timeout=8s"], capture_output=True, text=True,
+             timeout=20)
+    if r.returncode != 0:
+        return {"context": ctx, "pods": [],
+                "error": (r.stderr.strip() or "cluster unreachable")[:300]}
+    try:
+        items = json.loads(r.stdout or "{}").get("items", [])
+    except ValueError:
+        return {"context": ctx, "pods": [], "error": "unreadable kubectl output"}
+    pods = []
+    for it in items[:300]:
+        md, st = it.get("metadata") or {}, it.get("status") or {}
+        cs = st.get("containerStatuses") or []
+        pods.append({"ns": md.get("namespace", ""), "name": md.get("name", ""),
+                     "phase": st.get("phase", ""),
+                     "ready": f"{sum(1 for c in cs if c.get('ready'))}/{len(cs)}",
+                     "restarts": sum(c.get("restartCount") or 0 for c in cs),
+                     "node": (it.get("spec") or {}).get("nodeName", ""),
+                     "ip": st.get("podIP") or ""})
+    pods.sort(key=lambda p: (p["ns"], p["name"]))
+    return {"context": ctx, "pods": pods, "error": None}
+
+
+def container_envs():
+    """Every container environment present on this machine, Docker included."""
+    envs = []
+    for engine in CTR_ENGINES:
+        if not shutil.which(engine):
+            continue
+        env = {"engine": engine, "kind": "container",
+               "version": _ctr_version(engine), "containers": [], "error": None}
+        try:
+            env["containers"] = _ctr_ps(engine)
+        except Exception as e:  # noqa: BLE001 — one dead engine must not hide the rest
+            env["error"] = str(e)[:300]
+        envs.append(env)
+    # one flaky/odd-shaped environment must not take the whole panel down
+    try:
+        lxd = _lxd_containers()
+        if lxd:
+            envs.append(lxd)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        k8s = _k8s_pods()
+    except Exception:  # noqa: BLE001
+        k8s = None
+    return {"envs": envs, "k8s": k8s}
+
+
+def ctr_action(engine, cid, action):
+    if engine not in CTR_ENGINES or action not in CTR_ACTIONS:
+        raise ValueError("bad container action")
+    if not CTR_ID_RE.fullmatch(cid or ""):
+        raise ValueError("bad container id")
+    r = _run([engine, action, cid], capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        raise ValueError((r.stderr.strip() or "command failed")[:300])
+    return r.stdout.strip()
+
+
+def ctr_logs(engine, cid, ns=""):
+    """Recent log lines from a container (docker/podman/nerdctl) or a k8s pod."""
+    if engine == "k8s":
+        if not (K8S_NAME_RE.fullmatch(cid or "")
+                and K8S_NAME_RE.fullmatch(ns or "")):
+            raise ValueError("bad pod name")
+        cmd = ["kubectl", "logs", "-n", ns, cid, "--tail", "150",
+               "--all-containers=true"]
+    else:
+        if engine not in CTR_ENGINES:
+            raise ValueError("unknown container engine")
+        if not CTR_ID_RE.fullmatch(cid or ""):
+            raise ValueError("bad container id")
+        cmd = [engine, "logs", "--tail", "150", cid]
+    r = _run(cmd, capture_output=True, text=True, timeout=20)
     return {"logs": (r.stdout + r.stderr)[-20000:]}
 
 
@@ -1668,6 +1870,63 @@ def mon_save(new):
     return cfg
 
 
+# ---- alert firing state: breach tracking, per-rule cooldown, master switch ---
+
+_mon_breach = {}    # rule -> breach start ts
+_mon_fired = {}     # rule -> last fired ts
+_mon_minute = 0.0
+COOLDOWN = 600
+
+ALERTCTL_FILE = os.path.join(CFG_DIR, "alertctl.json")
+SNOOZE_MAX = 7 * 24 * 60          # minutes — a week is plenty for "shut up"
+
+
+def _alert_ctl_write(st):
+    os.makedirs(CFG_DIR, exist_ok=True)
+    atomic_write(ALERTCTL_FILE, json.dumps(st))
+    return st
+
+
+def alert_ctl():
+    """Current alerting state. An expired snooze resumes alerting by itself."""
+    st = {"enabled": True, "until": 0.0}
+    try:
+        with open(ALERTCTL_FILE) as f:
+            saved = json.load(f)
+        st["enabled"] = bool(saved.get("enabled", True))
+        st["until"] = float(saved.get("until", 0) or 0)
+    except (OSError, ValueError, TypeError):
+        return st
+    if not st["enabled"] and st["until"] and time.time() >= st["until"]:
+        st = _alert_ctl_write({"enabled": True, "until": 0.0})
+    return st
+
+
+def alerts_paused():
+    return not alert_ctl()["enabled"]
+
+
+def alert_ctl_set(action, minutes=0):
+    """start | stop | snooze (for `minutes`) | clear (wipe the history)."""
+    if action == "start":
+        return _alert_ctl_write({"enabled": True, "until": 0.0})
+    if action == "stop":
+        return _alert_ctl_write({"enabled": False, "until": 0.0})
+    if action == "snooze":
+        mins = max(1, min(SNOOZE_MAX, int(minutes or 60)))
+        return _alert_ctl_write({"enabled": False,
+                                 "until": time.time() + mins * 60})
+    if action == "clear":
+        try:
+            os.remove(ALERTS_FILE)
+        except OSError:
+            pass
+        _mon_fired.clear()
+        _mon_breach.clear()
+        return alert_ctl()
+    raise ValueError("unknown alert action")
+
+
 def notify(title, msg, critical=True):
     try:
         subprocess.Popen(["notify-send", "--app-name=Perch",
@@ -1755,6 +2014,10 @@ def notify_test():
 
 
 def _alert(rule, msg, value):
+    """Record and send one alert. Silent while alerting is stopped/snoozed —
+    nothing is logged either, so the history stays a record of what was sent."""
+    if alerts_paused():
+        return
     os.makedirs(MON_DIR, exist_ok=True)
     with open(ALERTS_FILE, "a") as f:
         f.write(json.dumps({"t": time.time(), "rule": rule, "msg": msg,
@@ -1762,13 +2025,11 @@ def _alert(rule, msg, value):
     dispatch("⚠ " + msg.split(" — ")[0], msg)
 
 
-_mon_breach = {}    # rule -> breach start ts
-_mon_fired = {}     # rule -> last fired ts
-_mon_minute = 0.0
-COOLDOWN = 600
-
-
 def _fire(rule, msg, value):
+    # checked before the cooldown is stamped: a rule that breached while
+    # alerting was stopped must be free to alert the moment it's started again
+    if alerts_paused():
+        return
     now = time.time()
     if now - _mon_fired.get(rule, 0) < COOLDOWN:
         return
@@ -1851,10 +2112,14 @@ def _tail_jsonl(path, n):
         return []
 
 
-def monitor_state():
-    return {"cfg": mon_cfg(),
-            "events": list(reversed(_tail_jsonl(ALERTS_FILE, 100))),
-            "history": _tail_jsonl(MINUTES_FILE, 1440)}
+def monitor_state(brief=False):
+    """Rules, alerting state and recent alerts. `brief` drops the 24 h history
+    (1440 samples) for callers that only want the events — e.g. home widgets."""
+    st = {"cfg": mon_cfg(), "ctl": alert_ctl(),
+          "events": list(reversed(_tail_jsonl(ALERTS_FILE, 100)))}
+    if not brief:
+        st["history"] = _tail_jsonl(MINUTES_FILE, 1440)
+    return st
 
 
 # ------------------------------------------------------- log-pattern watch ---
@@ -3740,7 +4005,8 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/readfile":
                 return self._json(read_text_file(qs.get("path", [""])[0]))
             if route == "/api/monitor":
-                return self._json(monitor_state())
+                return self._json(monitor_state(
+                    qs.get("brief", ["0"])[0] == "1"))
             if route == "/api/notify":
                 return self._json(notify_cfg())
             if route == "/api/logwatch":
@@ -3796,6 +4062,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(docker_stats())
             if route == "/api/dockercompose":
                 return self._json(docker_compose_projects())
+            if route == "/api/containers":
+                return self._json(container_envs())
+            if route == "/api/ctrlogs":
+                return self._json(ctr_logs(qs.get("engine", [""])[0],
+                                           qs.get("id", [""])[0],
+                                           qs.get("ns", [""])[0]))
+            if route == "/api/alertctl":
+                return self._json(alert_ctl())
             return self._err("not found", 404)
         except Exception as e:  # noqa: BLE001 — surfaced to the UI
             return self._err(e)
@@ -3830,8 +4104,11 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=build_index, daemon=True).start()
                 return self._json({"ok": True})
             if route == "/api/killport":
+                pid = body.get("pid")
                 return self._json({"ok": True,
-                                   "name": kill_port(int(body["port"]))})
+                                   "name": kill_port(int(body["port"]),
+                                                     bool(body.get("force")),
+                                                     int(pid) if pid else None)})
             if route == "/api/dockeraction":
                 out = docker_action(body["id"], body["action"])
                 return self._json({"ok": True, "out": out})
@@ -3952,6 +4229,14 @@ class Handler(BaseHTTPRequestHandler):
                                                         body["action"]))
             if route == "/api/dockerprune":
                 return self._json(docker_prune(body["kind"]))
+            if route == "/api/ctraction":
+                out = ctr_action(body.get("engine", ""), body.get("id", ""),
+                                 body.get("action", ""))
+                return self._json({"ok": True, "out": out})
+            if route == "/api/alertctl":
+                return self._json({"ok": True,
+                                   "ctl": alert_ctl_set(body.get("action", ""),
+                                                        body.get("minutes", 0))})
             if route == "/api/health":
                 return self._json(health_report())
             return self._err("not found", 404)

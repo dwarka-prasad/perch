@@ -38,7 +38,7 @@ document.querySelectorAll("nav button[data-tab]").forEach(b=>b.onclick=()=>{
   b.classList.add("active");
   document.querySelectorAll("section").forEach(s=>s.classList.remove("on"));
   $("#tab-"+b.dataset.tab).classList.add("on");
-  ({storage:loadStorage,proc:loadProcs,users:loadUsers,
+  ({overview:refreshHome,storage:loadStorage,proc:loadProcs,users:loadUsers,
     files:()=>loadFiles(fPath),clean:loadClean,
     search:()=>{$("#sq").focus();searchStatus();},
     net:loadNet,dev:loadDev,kernel:loadKernel,
@@ -209,6 +209,15 @@ const PAL_ITEMS=[
     .map(([t,l])=>({label:l,hint:"tab",act:()=>goTab(t)})),
   {label:"🔁 Rebuild file index",hint:"action",act:()=>$("#reindex").click()},
   {label:"🔔 Send test notification",hint:"action",act:()=>$("#monTest").click()},
+  {label:"⏸ Stop / start alerts",hint:"action",
+   act:()=>alertCtl(acCtl.enabled===false?"start":"stop")},
+  {label:"😴 Snooze alerts for an hour",hint:"action",act:()=>alertCtl("snooze",60)},
+  {label:"🔍 Find a file from the home screen",hint:"action",
+   act:()=>{goTab("overview");$("#ovSq").focus();}},
+  {label:"🧩 Add a widget to the home screen",hint:"action",
+   act:()=>{goTab("overview");galOpen();}},
+  {label:"✎ Customize the home screen",hint:"action",
+   act:()=>{goTab("overview");if(!ovEditing)$("#ovCustomize").click();}},
   {label:"📝 New file here",hint:"action",act:()=>{goTab("files");$("#newFile").click();}},
   {label:"🎨 New sketch",hint:"action",act:()=>{goTab("files");$("#newSketch").click();}},
   {label:"🖥 Open terminal in current folder",hint:"action",act:()=>{goTab("files");$("#termHere").click();}},
@@ -591,65 +600,374 @@ document.addEventListener("visibilitychange",()=>{
   if(document.hidden)stopBg();
   else if(bgMode==="aurora"||bgMode==="particles")startBg(bgMode);});
 
-/* ===== customizable home (Overview tiles) ===== */
-function tileState(){try{return JSON.parse(localStorage.perchTiles||"{}");}catch(e){return {};}}
-function applyTiles(){
-  const st=tileState(),grid=$("#ovCards");if(!grid)return;
-  const cards=[...grid.querySelectorAll(".card")];
-  if(st.order)st.order.forEach(id=>{
-    const c=cards.find(x=>x.dataset.tile===id);if(c)grid.appendChild(c);});
-  cards.forEach(c=>c.classList.toggle("tile-hidden",
-    (st.hidden||[]).includes(c.dataset.tile)));
+/* ===== fully customizable home ==============================================
+   Every item on the Overview tab — the stat tiles and the panels alike — is a
+   widget in one grid: reorder by dragging, resize S/M/L/full, remove, and add
+   more from the gallery. `core:1` widgets have their markup in index.html (the
+   loaders elsewhere in this file own their contents); the rest are rendered
+   here from an existing API. Layout lives in localStorage.perchHome.        */
+
+const HOME_ROWS=rows=>`<div class="hwbody">${rows.join("")||
+  '<span class="muted">nothing to show</span>'}</div>`;
+const HOME_ROW=(left,right)=>`<div class="r"><div class="g">${left}</div>
+  <div class="num">${right||""}</div></div>`;
+const HOME_HEAD=(title,extra)=>`<h2>${title}${extra||""}</h2>`;
+const goLink=(tab,label)=>`<button class="btn small" data-goto-tab="${tab}"
+  style="margin-left:8px">${label}</button>`;
+// widgets whose data is expensive to gather load once and refresh on demand
+const reloadBtn=id=>`<button class="btn small" data-hwreload="${id}"
+  style="margin-left:8px" title="refresh now">↻</button>`;
+
+const HOME_WIDGETS={
+  /* --- core: markup already in the page, filled in by the loaders above --- */
+  cpu:{icon:"🔥",title:"CPU",desc:"Live load with a sparkline",core:1,size:"s"},
+  mem:{icon:"🧠",title:"Memory",desc:"Used, total and swap",core:1,size:"s"},
+  net:{icon:"🌐",title:"Network",desc:"Up/down throughput",core:1,size:"s"},
+  gpu:{icon:"🎮",title:"GPU",desc:"Clock, busy % and top consumer",core:1,size:"s"},
+  core:{icon:"📶",title:"Per-core load",desc:"A bar per CPU core",core:1,size:"s"},
+  disk:{icon:"💽",title:"Disk I/O",desc:"Read and write throughput",core:1,size:"s"},
+  temp:{icon:"🌡️",title:"Temperature",desc:"Hottest sensor over time",core:1,size:"s"},
+  battery:{icon:"🔋",title:"Battery",desc:"Charge, health and cycles",core:1,size:"s"},
+  uptime:{icon:"⏱️",title:"Uptime",desc:"Uptime, load average, process count",core:1,size:"s"},
+  search:{icon:"🔍",title:"Find a file",desc:"Search the whole system by name",core:1,size:"full"},
+  health:{icon:"🩺",title:"Health check",desc:"Score out of 100 with one-click fixes",core:1,size:"full"},
+  critlogs:{icon:"⚠",title:"Needs attention",desc:"Recent errors from the system log",core:1,size:"full"},
+  hw:{icon:"💻",title:"This laptop",desc:"Model, BIOS, CPU/GPU, battery health, Wi-Fi",core:1,size:"full"},
+
+  /* ------------------------- gallery: opt-in widgets ------------------------ */
+  procs:{icon:"⚙️",title:"Top processes",desc:"Busiest processes by CPU",
+    size:"m",every:8000,
+    load:async()=>{const p=await api("/api/processes?sort=cpu");
+      return HOME_HEAD("⚙️ Top processes",goLink("proc","open"))+
+        HOME_ROWS(p.slice(0,6).map(x=>HOME_ROW(
+          `<b>${esc(x.name)}</b> <span class="muted mono">${x.pid}</span>`,
+          `${x.cpu.toFixed(0)}% · ${fmtB(x.mem)}`)));}},
+  disks:{icon:"💾",title:"Disk usage",desc:"How full each mounted disk is",
+    size:"m",every:60000,
+    load:async()=>{const ds=await api("/api/disks");
+      return HOME_HEAD("💾 Disk usage",goLink("storage","open"))+
+        HOME_ROWS(ds.slice(0,6).map(d=>HOME_ROW(
+          `<b class="mono">${esc(d.mount)}</b>
+           <div class="bar" style="margin-top:3px"><i style="width:${d.percent}%;
+             background:${usageColor(d.percent)}"></i></div>`,
+          `${d.percent.toFixed(0)}%<div class="muted" style="font-size:11px">
+             ${fmtB(d.free)} free</div>`)));}},
+  ports:{icon:"🔌",title:"Listening ports",desc:"What is listening, and where",
+    size:"m",every:15000,
+    load:async()=>{const n=await api("/api/net");
+      const pub=n.listen.filter(p=>p.public).length;
+      return HOME_HEAD("🔌 Listening ports",
+        `<span class="muted"> — ${n.listen.length} open, ${pub} network-visible</span>`+
+        goLink("net","open"))+
+        HOME_ROWS(n.listen.slice(0,7).map(p=>HOME_ROW(
+          `<b>${p.port}</b> <span class="muted">${esc(p.name||"—")}</span>`,
+          p.public?'<span class="pill">⚠ public</span>':
+            '<span class="muted">local</span>')));}},
+  containers:{icon:"🐳",title:"Containers & pods",desc:"Docker, Podman, LXD and Kubernetes",
+    size:"m",every:60000,
+    load:async()=>{const d=await api("/api/containers");
+      const rows=[];
+      for(const e of d.envs){
+        const up=e.containers.filter(c=>c.state==="running").length;
+        rows.push(HOME_ROW(`<b>${esc(e.engine)}</b>`,
+          `${up}/${e.containers.length} up`));
+        e.containers.filter(c=>c.state==="running").slice(0,3).forEach(c=>
+          rows.push(HOME_ROW(`<span class="muted">&nbsp;&nbsp;🟢 ${esc(c.name)}</span>`,
+            `<span class="mono" style="font-size:10.5px">${esc(c.ports||"")}</span>`)));
+      }
+      if(d.k8s)rows.push(HOME_ROW(`<b>kubernetes</b>
+        <span class="muted">${esc(d.k8s.context||"")}</span>`,
+        d.k8s.error?'<span class="muted">unreachable</span>'
+          :`${d.k8s.pods.filter(p=>p.phase==="Running").length}/${d.k8s.pods.length} running`));
+      return HOME_HEAD("🐳 Containers & pods",goLink("dev","open"))+HOME_ROWS(rows);}},
+  alerts:{icon:"🚨",title:"Recent alerts",desc:"Latest fired alerts and the master switch",
+    size:"m",every:30000,
+    load:async()=>{const m=await api("/api/monitor?brief=1");
+      const on=m.ctl&&m.ctl.enabled!==false;
+      return HOME_HEAD(`🚨 Recent alerts <span class="muted">— ${
+        on?"alerting on":"alerting stopped"}</span>`,goLink("monitor","open"))+
+        HOME_ROWS(m.events.slice(0,5).map(e=>HOME_ROW(
+          `<span class="pill">${esc(e.rule)}</span> ${esc(e.msg)}`,
+          `<span class="muted">${ago(e.t)}</span>`))
+          .concat(m.events.length?[]:['<span style="color:var(--goodtext)">nothing has fired 🎉</span>']));}},
+  updates:{icon:"📦",title:"Pending updates",desc:"Packages waiting to be upgraded",
+    size:"m",every:300000,
+    load:async()=>{const u=await api("/api/updates");
+      return HOME_HEAD("📦 Pending updates",goLink("updates","open"))+
+        (u.count?HOME_ROWS([HOME_ROW(
+          `<b>${u.count}</b> upgradable${u.security?
+            ` · <span style="color:var(--crit)">${u.security} security</span>`:""}`,"")]
+          .concat(u.packages.slice(0,5).map(p=>HOME_ROW(
+            `<span class="muted">${esc(p.name)}</span>`,
+            `<span class="mono" style="font-size:10.5px">${esc(p.new)}</span>`))))
+          :'<div class="hwbody"><span style="color:var(--goodtext)">everything is up to date 🎉</span></div>');}},
+  services:{icon:"🧩",title:"Failed services",desc:"systemd units that need a look",
+    size:"m",every:60000,
+    load:async()=>{const s=await api("/api/services");
+      const bad=s.failed_system.map(f=>HOME_ROW(
+        `<span style="color:var(--crit)">🔴 ${esc(f.name)}</span>`,""))
+        .concat(s.user.filter(u=>u.active==="failed").map(u=>HOME_ROW(
+          `<span style="color:var(--crit)">🔴 ${esc(u.name)}</span>`,
+          '<span class="muted">user</span>')));
+      return HOME_HEAD("🧩 Failed services",goLink("dev","open"))+
+        (bad.length?HOME_ROWS(bad.slice(0,7))
+          :'<div class="hwbody"><span style="color:var(--goodtext)">no failed services 🎉</span></div>');}},
+  gitrepos:{icon:"🔀",title:"Git repositories",desc:"Repos with uncommitted work",
+    size:"m",every:0,
+    load:async()=>{const g=await api("/api/gitrepos");
+      const dirty=(g.repos||[]).filter(r=>r.dirty||r.ahead||r.behind);
+      return HOME_HEAD("🔀 Git repositories",
+        `<span class="muted"> — ${dirty.length} of ${(g.repos||[]).length} need attention</span>`+
+        reloadBtn("gitrepos")+goLink("git","open"))+
+        HOME_ROWS(dirty.slice(0,6).map(r=>HOME_ROW(
+          `<b>${esc(r.name)}</b> <span class="muted">${esc(r.branch||"")}</span>`,
+          [r.dirty?`${r.dirty} changed`:"",r.ahead?`↑${r.ahead}`:"",
+           r.behind?`↓${r.behind}`:""].filter(Boolean).join(" · "))));}},
+  cleanup:{icon:"🧹",title:"Reclaimable space",desc:"What a cleanup would free",
+    size:"m",every:0,
+    load:async()=>{const c=await api("/api/cleanup");
+      const t=(c.targets||[]);
+      return HOME_HEAD("🧹 Reclaimable space",
+        `<span class="muted"> — ${fmtB(t.reduce((a,x)=>a+(x.size||0),0))} total</span>`+
+        reloadBtn("cleanup")+goLink("clean","open"))+
+        HOME_ROWS(t.filter(x=>x.size).slice(0,6).map(x=>HOME_ROW(
+          esc(x.label||x.id),fmtB(x.size))));}},
+  actions:{icon:"⚡",title:"Quick actions",desc:"One-click shortcuts you use often",
+    size:"m",every:0,
+    load:async()=>HOME_HEAD("⚡ Quick actions")+
+      `<div class="row" style="margin:0;gap:6px">
+        <button class="btn small" data-qa="term">🖥 Terminal</button>
+        <button class="btn small" data-qa="note">📝 New note</button>
+        <button class="btn small" data-qa="sketch">🎨 Sketch</button>
+        <button class="btn small" data-qa="speed">🚀 Speed test</button>
+        <button class="btn small" data-qa="clean">🧹 Clean up</button>
+        <button class="btn small" data-qa="index">🔁 Rebuild index</button>
+        <button class="btn small" data-qa="health">🩺 Re-check health</button>
+      </div>`},
+  notes:{icon:"📝",title:"Scratchpad",desc:"A quick note kept in this browser",
+    size:"m",every:0,
+    load:async()=>HOME_HEAD("📝 Scratchpad",
+      '<span class="muted" id="npStat" style="font-size:11.5px"></span>')+
+      `<textarea id="ovNotes" class="tin" style="height:120px"
+        placeholder="Jot anything — saved as you type">${esc(localStorage.perchNotes||"")}</textarea>`},
+  clock:{icon:"🕒",title:"Clock",desc:"Local time and date",size:"s",every:1000,
+    load:async()=>{const d=new Date();
+      return `<div class="k">${d.toLocaleDateString([],{weekday:"long"})}</div>
+        <div class="v">${d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</div>
+        <div class="d">${d.toLocaleDateString([],{day:"numeric",month:"long",year:"numeric"})}</div>`;},
+    card:1},
+  ifaces:{icon:"🖧",title:"Network interfaces",desc:"NICs and their IP addresses",
+    size:"m",every:60000,
+    load:async()=>{const n=await api("/api/net");
+      return HOME_HEAD("🖧 Network interfaces",goLink("net","open"))+
+        HOME_ROWS(n.ifaces.map(i=>HOME_ROW(
+          `${i.up?"🟢":"⚪"} <b>${esc(i.nic)}</b>`,
+          `<span class="mono" style="font-size:11px">${i.ips.map(esc).join(", ")}</span>`)));}},
+};
+const HOME_DEFAULT=["cpu","mem","net","gpu","core","disk","temp","battery",
+  "uptime","search","health","critlogs","hw"];
+const HOME_SIZES=["s","m","l","full"];
+const HOME_SIZE_LABEL={s:"S",m:"M",l:"L",full:"▭"};
+
+function homeState(){
+  let st=null;
+  try{st=JSON.parse(localStorage.perchHome||"null");}catch(e){}
+  if(!st){
+    // migrate the older tiles-only layout so existing users keep their home
+    let old=null;
+    try{old=JSON.parse(localStorage.perchTiles||"null");}catch(e){}
+    st=old?{order:(old.order||[]).concat(HOME_DEFAULT.filter(
+        id=>!(old.order||[]).includes(id))),
+      hidden:(old.hidden||[]).slice(),sizes:{}}
+      :{order:HOME_DEFAULT.slice(),hidden:[],sizes:{}};
+  }
+  st.order=st.order||[];st.hidden=st.hidden||[];st.sizes=st.sizes||{};
+  return st;
 }
-function saveTiles(){
-  const grid=$("#ovCards");
-  const order=[...grid.querySelectorAll(".card")].map(c=>c.dataset.tile);
-  const hidden=[...grid.querySelectorAll(".card.tile-hidden")].map(c=>c.dataset.tile);
-  localStorage.perchTiles=JSON.stringify({order,hidden});
+function saveHome(){
+  const grid=$("#ovGrid");if(!grid)return;
+  const st=homeState();
+  const shown=[...grid.children].filter(el=>el.dataset.w&&
+    !el.classList.contains("hw-off")).map(el=>el.dataset.w);
+  st.order=shown.concat(st.order.filter(id=>!shown.includes(id)));
+  st.hidden=Object.keys(HOME_WIDGETS).filter(id=>!shown.includes(id));
+  [...grid.children].forEach(el=>{
+    if(el.dataset.w&&el.dataset.size)st.sizes[el.dataset.w]=el.dataset.size;});
+  localStorage.perchHome=JSON.stringify(st);
 }
+function homeEl(id){
+  const grid=$("#ovGrid");
+  let el=grid.querySelector(`[data-w="${CSS.escape(id)}"]`);
+  if(el)return el;
+  const w=HOME_WIDGETS[id];if(!w||w.core)return null;
+  el=document.createElement("div");
+  el.className=w.card?"card":"panel";
+  el.dataset.w=id;
+  el.innerHTML='<div class="muted" style="font-size:12.5px">loading…</div>';
+  delete hwLast[id];          // a re-added widget must render straight away
+  grid.appendChild(el);
+  return el;
+}
+function applyHome(){
+  const grid=$("#ovGrid");if(!grid)return;
+  const st=homeState();
+  const order=st.order.filter(id=>HOME_WIDGETS[id]&&!st.hidden.includes(id));
+  order.forEach(id=>{
+    const el=homeEl(id);if(!el)return;
+    el.dataset.size=st.sizes[id]||HOME_WIDGETS[id].size||"s";
+    el.classList.remove("hw-off");
+    grid.appendChild(el);                       // re-append = move into order
+  });
+  // hidden core widgets stay in the DOM (their loaders keep writing to them)
+  [...grid.children].forEach(el=>{
+    const id=el.dataset.w;
+    if(id&&!order.includes(id)){
+      if(HOME_WIDGETS[id]&&HOME_WIDGETS[id].core)el.classList.add("hw-off");
+      else el.remove();
+    }
+  });
+  ovDecorate();
+  refreshHome();
+}
+/* ---- rendering & refresh of the non-core widgets ---- */
+const hwLast={};
+async function renderWidget(id,force){
+  const w=HOME_WIDGETS[id];
+  if(!w||w.core||!w.load)return;
+  const el=$("#ovGrid").querySelector(`[data-w="${CSS.escape(id)}"]`);
+  if(!el||el.classList.contains("hw-off"))return;
+  const now=Date.now();
+  // never rendered → always render; otherwise honour the widget's own cadence
+  // (every:0 means "load once", refreshed by its ↻ button)
+  if(!force&&hwLast[id]&&(!w.every||now-hwLast[id]<w.every))return;
+  hwLast[id]=now;
+  try{
+    const html=await w.load();
+    const ctl=el.querySelector(".hwctl");
+    el.innerHTML=html;
+    if(ctl)el.appendChild(ctl);                    // keep the edit controls
+    el.querySelectorAll("[data-goto-tab]").forEach(b=>
+      b.onclick=e=>{e.stopPropagation();goTab(b.dataset.gotoTab);});
+    el.querySelectorAll("[data-hwreload]").forEach(b=>
+      b.onclick=e=>{e.stopPropagation();renderWidget(b.dataset.hwreload,true);});
+    hookWidgetExtras(id,el);
+  }catch(e){
+    el.innerHTML=`<div class="muted" style="font-size:12.5px">
+      ${esc(w.title)} unavailable — ${esc(e.message)}</div>`;
+  }
+}
+function hookWidgetExtras(id,el){
+  if(id==="actions")el.querySelectorAll("[data-qa]").forEach(b=>b.onclick=()=>({
+    term:()=>goTab("term"),
+    note:()=>{goTab("files");$("#newFile").click();},
+    sketch:()=>{goTab("files");$("#newSketch").click();},
+    speed:()=>{goTab("net");$("#speedGo").click();},
+    clean:()=>goTab("clean"),
+    index:()=>$("#reindex").click(),
+    health:()=>{loadHealth();toast("re-checking health");},
+  }[b.dataset.qa]||(()=>{}))());
+  if(id==="notes"){
+    const t=el.querySelector("#ovNotes");
+    t.oninput=()=>{localStorage.perchNotes=t.value;
+      const s=el.querySelector("#npStat");if(s)s.textContent="saved";};
+  }
+}
+function refreshHome(){
+  if(!$("#tab-overview").classList.contains("on")||document.hidden)return;
+  homeState().order.forEach(id=>renderWidget(id));
+}
+setInterval(refreshHome,5000);
+
+/* ---- edit mode ---- */
 let ovEditing=false,dragEl=null;
-function ovEnsureX(){
-  $("#ovCards").querySelectorAll(".card").forEach(c=>{
-    if(!c.querySelector(".tilex")){
-      const x=document.createElement("span");x.className="tilex";x.textContent="✕";
-      x.title="hide tile";x.onclick=e=>{e.stopPropagation();
-        c.classList.add("tile-hidden");saveTiles();};
-      c.appendChild(x);}
-    c.classList.toggle("editing",ovEditing);
-    c.draggable=ovEditing;
+function ovDecorate(){
+  $("#ovGrid").querySelectorAll("[data-w]").forEach(el=>{
+    let ctl=el.querySelector(".hwctl");
+    if(!ctl){
+      ctl=document.createElement("div");ctl.className="hwctl";
+      ctl.innerHTML=`<button class="sz" title="resize"></button>
+        <button class="rm" title="remove from home">✕</button>`;
+      ctl.querySelector(".sz").onclick=e=>{e.stopPropagation();
+        const cur=el.dataset.size||"s";
+        el.dataset.size=HOME_SIZES[(HOME_SIZES.indexOf(cur)+1)%HOME_SIZES.length];
+        ovDecorate();saveHome();};
+      ctl.querySelector(".rm").onclick=e=>{e.stopPropagation();
+        const st=homeState();
+        st.hidden=st.hidden.filter(x=>x!==el.dataset.w).concat(el.dataset.w);
+        st.order=st.order.filter(x=>x!==el.dataset.w);
+        localStorage.perchHome=JSON.stringify(st);
+        applyHome();toast(`${HOME_WIDGETS[el.dataset.w].title} removed`);};
+      el.appendChild(ctl);
+    }
+    ctl.querySelector(".sz").textContent=HOME_SIZE_LABEL[el.dataset.size||"s"];
+    el.classList.toggle("editing",ovEditing&&!el.classList.contains("hw-off"));
+    el.draggable=ovEditing;
   });
 }
 $("#ovCustomize")&&($("#ovCustomize").onclick=()=>{
   ovEditing=!ovEditing;
   $("#ovCustomize").textContent=ovEditing?"✓ Done":"✎ Customize home";
   $("#ovReset").style.display=ovEditing?"":"none";
-  // reveal hidden tiles (dimmed) while editing so they can be restored
-  $("#ovCards").querySelectorAll(".card.tile-hidden").forEach(c=>{
-    c.style.display=ovEditing?"":"";
-    if(ovEditing){c.classList.remove("tile-hidden");c.classList.add("was-hidden");
-      c.style.opacity=".4";}
-  });
-  if(!ovEditing){
-    $("#ovCards").querySelectorAll(".was-hidden").forEach(c=>{
-      c.classList.add("tile-hidden");c.classList.remove("was-hidden");c.style.opacity="";});
-    saveTiles();
-  }
-  ovEnsureX();
+  $("#ovAdd").style.display=ovEditing?"":"none";
+  $("#ovEditHint").style.display=ovEditing?"":"none";
+  ovDecorate();
+  if(!ovEditing){saveHome();toast("home layout saved");}
 });
 $("#ovReset")&&($("#ovReset").onclick=()=>{
-  localStorage.removeItem("perchTiles");location.reload();});
-$("#ovCards")&&$("#ovCards").addEventListener("dragstart",e=>{
-  if(!ovEditing)return;dragEl=e.target.closest(".card");
+  if(!confirm("Reset the home screen to its default layout?"))return;
+  localStorage.removeItem("perchHome");localStorage.removeItem("perchTiles");
+  location.reload();});
+$("#ovGrid")&&$("#ovGrid").addEventListener("dragstart",e=>{
+  if(!ovEditing)return;dragEl=e.target.closest("[data-w]");
   if(dragEl)dragEl.classList.add("dragging");});
-$("#ovCards")&&$("#ovCards").addEventListener("dragend",e=>{
-  if(dragEl){dragEl.classList.remove("dragging");dragEl=null;saveTiles();}});
-$("#ovCards")&&$("#ovCards").addEventListener("dragover",e=>{
+$("#ovGrid")&&$("#ovGrid").addEventListener("dragend",()=>{
+  if(dragEl){dragEl.classList.remove("dragging");dragEl=null;saveHome();}});
+$("#ovGrid")&&$("#ovGrid").addEventListener("dragover",e=>{
   if(!ovEditing||!dragEl)return;e.preventDefault();
-  const after=[...$("#ovCards").querySelectorAll(".card:not(.dragging)")].find(c=>{
-    const r=c.getBoundingClientRect();
-    return e.clientY<r.top+r.height/2&&e.clientX<r.right;})||null;
-  if(after)$("#ovCards").insertBefore(dragEl,after);
-  else $("#ovCards").appendChild(dragEl);});
+  const grid=$("#ovGrid");
+  const after=[...grid.querySelectorAll("[data-w]:not(.dragging):not(.hw-off)")]
+    .find(c=>{const r=c.getBoundingClientRect();
+      return e.clientY<r.top+r.height/2&&e.clientX<r.right;})||null;
+  if(after)grid.insertBefore(dragEl,after);
+  else grid.appendChild(dragEl);});
+
+/* ---- widget gallery ---- */
+function galRender(){
+  const q=($("#ovGalSearch").value||"").trim().toLowerCase();
+  const st=homeState();
+  const avail=Object.keys(HOME_WIDGETS).filter(id=>!st.order.includes(id)
+    ||st.hidden.includes(id));
+  const shown=avail.filter(id=>!q||
+    (HOME_WIDGETS[id].title+" "+HOME_WIDGETS[id].desc).toLowerCase().includes(q));
+  $("#ovGalCount").textContent=`${avail.length} available`;
+  $("#ovGalList").innerHTML=shown.map(id=>{
+    const w=HOME_WIDGETS[id];
+    return `<div class="galItem" data-add="${id}"><span class="gi">${w.icon}</span>
+      <div><div class="gt">${esc(w.title)}</div>
+      <div class="gd">${esc(w.desc)}</div></div>
+      <span class="ga">＋ Add</span></div>`;}).join("")
+    ||`<div class="galItem muted">${avail.length?"no widgets match"
+        :"every widget is already on your home screen 🎉"}</div>`;
+  $("#ovGalList").querySelectorAll("[data-add]").forEach(el=>el.onclick=()=>{
+    const id=el.dataset.add,s=homeState();
+    s.hidden=s.hidden.filter(x=>x!==id);
+    s.order=s.order.filter(x=>x!==id).concat(id);
+    localStorage.perchHome=JSON.stringify(s);
+    applyHome();galRender();
+    toast(`${HOME_WIDGETS[id].title} added to the home screen`);
+  });
+}
+function galOpen(){$("#ovGallery").classList.add("open");
+  $("#ovGalSearch").value="";galRender();
+  setTimeout(()=>$("#ovGalSearch").focus(),40);}
+function galClose(){$("#ovGallery").classList.remove("open");}
+$("#ovAdd")&&($("#ovAdd").onclick=galOpen);
+$("#ovGalClose")&&($("#ovGalClose").onclick=galClose);
+$("#ovGalSearch")&&($("#ovGalSearch").oninput=galRender);
+$("#ovGallery")&&($("#ovGallery").onclick=e=>{
+  if(e.target.id==="ovGallery")galClose();});
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape"&&$("#ovGallery").classList.contains("open"))galClose();});
 
 /* ---- runtimes ---- */
 async function loadSsh(){
@@ -827,7 +1145,7 @@ document.querySelectorAll("[data-dest]").forEach(b=>b.onclick=()=>{
   $("#dFolder").value=d==="home"?HOME_DIR:HOME_DIR+"/"+d;
 });
 
-applyTiles();
+applyHome();
 initAccentUI();
 if(bgMode!=="none")startBg(bgMode);
 /* ---- overview: critical logs needing attention ---- */
@@ -1523,35 +1841,199 @@ function gotoFiles(p){
   loadFiles(p);
 }
 
+/* ---- file search on the home screen (same index as the Search tab) ---- */
+function ovSqFull(){
+  const q=$("#ovSq").value.trim();
+  goTab("search");
+  if(q.length>=2){$("#sq").value=q;$("#sqRe").checked=$("#ovSqRe").checked;runSearch();}
+}
+async function ovRunSearch(){
+  const q=$("#ovSq").value.trim();
+  if(q.length<2){$("#ovSqOut").innerHTML="";
+    $("#ovSqStatus").textContent=q?"type at least 2 characters":"";return;}
+  $("#ovSqStatus").textContent="searching…";
+  try{
+    const r=await api("/api/search?q="+encodeURIComponent(q)+
+      ($("#ovSqRe").checked?"&regex=1":""));
+    const shown=r.results.slice(0,8);
+    $("#ovSqStatus").textContent=(r.note?r.note+" · ":"")+
+      `${r.results.length} result${r.results.length===1?"":"s"}`+
+      (r.truncated?" (more exist — narrow it down)":"");
+    const box=$("#ovSqOut");
+    if(!shown.length){
+      box.innerHTML='<span class="muted" style="font-size:12.5px">no matches</span>';
+      return;}
+    box.innerHTML='<table><tbody>'+shown.map(f=>{
+      const parent=f.path.slice(0,f.path.lastIndexOf("/"))||"/";
+      return `<tr>
+        <td><span class="name" data-p="${esc(f.path)}" data-dir="${f.dir}">${f.dir?"📁":"📄"}
+          <b>${esc(f.path.split("/").pop())}</b></span>
+          <div class="mono muted" style="font-size:10.5px;max-width:520px;overflow:hidden;
+            text-overflow:ellipsis;white-space:nowrap">${esc(parent)}</div></td>
+        <td class="num">${f.dir?"—":fmtB(f.size)}</td>
+        <td class="num muted" style="font-size:11.5px">${ago(f.mtime)}</td>
+        <td class="num" style="white-space:nowrap">
+          <button class="btn small" data-open="${esc(f.path)}">Open</button>
+          <button class="btn small" data-goto="${esc(f.dir?f.path:parent)}">Browse</button>
+        </td></tr>`;}).join("")+'</tbody></table>'+
+      (r.results.length>shown.length
+        ?`<div class="muted" style="font-size:11.5px;margin-top:6px">showing the top
+           ${shown.length} of ${r.results.length} — press Enter for all results</div>`:"");
+    hookRowActions(box);
+  }catch(e){$("#ovSqStatus").textContent="";toast(e.message,false);}
+}
+$("#ovSq")&&($("#ovSq").oninput=()=>{clearTimeout(window._ovsq);
+  window._ovsq=setTimeout(ovRunSearch,350);});
+$("#ovSq")&&($("#ovSq").onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();ovSqFull();}});
+$("#ovSqRe")&&($("#ovSqRe").onchange=ovRunSearch);
+$("#ovSqFull")&&($("#ovSqFull").onclick=ovSqFull);
+
 /* ---- network ---- */
+let netData=null;
 async function loadNet(){
   try{
-    const n=await api("/api/net");
-    $("#estCount").textContent=`· ${n.established} established connections`;
-    $("#ports tbody").innerHTML=n.listen.map(p=>`
-      <tr><td class="num"><b>${p.port}</b></td>
-      <td class="mono">${esc(p.addr)}</td>
-      <td>${p.public?'<span class="pill">⚠ network-visible</span>':'<span class="muted">localhost only</span>'}</td>
-      <td>${p.name?`<b>${esc(p.name)}</b>`:'<span class="muted">—</span>'}</td>
-      <td class="num mono">${p.pid??"—"}</td>
-      <td class="num">${p.mine?`<button class="btn small danger" data-port="${p.port}">Free port</button>`:""}</td></tr>`).join("");
-    $("#ports").querySelectorAll("[data-port]").forEach(b=>b.onclick=async()=>{
-      if(!confirm(`End the process listening on port ${b.dataset.port}?`))return;
-      try{const r=await api("/api/killport",{method:"POST",
-        body:JSON.stringify({port:+b.dataset.port})});
-        toast(`terminated ${r.name}`);setTimeout(loadNet,700);}
-      catch(e){toast(e.message,false);}});
-    $("#ifaces").innerHTML=n.ifaces.map(i=>`
+    netData=await api("/api/net");
+    $("#estCount").textContent=`· ${netData.established} established connections`;
+    renderPorts();
+    $("#ifaces").innerHTML=netData.ifaces.map(i=>`
       <span class="pill" style="margin:3px 6px 3px 0">
       ${i.up?"🟢":"⚪"} <b>${esc(i.nic)}</b> ${i.ips.map(esc).join(", ")}</span>`).join("")
       ||'<span class="muted">no interfaces up</span>';
   }catch(e){toast(e.message,false);}
 }
+function renderPorts(){
+  if(!netData)return;
+  const q=($("#portQ").value||"").trim().toLowerCase();
+  const pubOnly=$("#portPub").checked;
+  const rows=netData.listen.filter(p=>
+    (!pubOnly||p.public)&&
+    (!q||String(p.port).includes(q)||(p.name||"").toLowerCase().includes(q)||
+     (p.cmd||"").toLowerCase().includes(q)||(p.addr||"").includes(q)));
+  $("#ports tbody").innerHTML=rows.map(p=>{
+    const stop=!p.pid
+      ?'<span class="muted" style="font-size:12px">owner hidden</span>'
+      :p.self
+        ?'<span class="muted" style="font-size:12px">Perch itself</span>'
+        :p.mine
+          ?`<button class="btn small danger" data-stop="${p.port}" data-pid="${p.pid}">Stop</button>
+            <button class="btn small danger" data-force="${p.port}" data-pid="${p.pid}">Force</button>`
+          :`<button class="btn small" data-sudo="${p.pid}"
+              title="another user owns this — copy the command and run it in a terminal">⧉ sudo kill</button>`;
+    return `<tr><td class="num"><b>${p.port}</b></td>
+      <td class="mono">${esc(p.addr)}</td>
+      <td>${p.public?'<span class="pill">⚠ network-visible</span>':'<span class="muted">localhost only</span>'}</td>
+      <td>${p.name?`<b>${esc(p.name)}</b>`:'<span class="muted">—</span>'}
+        ${p.user?` <span class="muted" style="font-size:11px">${esc(p.user)}</span>`:""}
+        ${p.cmd?`<div class="mono muted" style="font-size:10.5px;max-width:340px;
+          overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          title="${esc(p.cmd)}">${esc(p.cmd)}</div>`:""}</td>
+      <td class="num mono">${p.pid??"—"}</td>
+      <td style="white-space:nowrap">${stop}</td></tr>`;}).join("")
+    ||`<tr><td colspan=6 class="muted" style="padding:12px">no listening ports match</td></tr>`;
+  const stopPort=async(port,pid,force)=>{
+    const p=netData.listen.find(x=>x.port===+port&&x.pid===+pid)||{};
+    if(!confirm(`${force?"Force kill":"Stop"} ${p.name||"the process"} `+
+      `(pid ${pid}) listening on port ${port}?`+
+      (force?"\n\nSIGKILL is immediate — unsaved state is lost."
+            :"\n\nIt is asked to shut down cleanly (SIGTERM).")))return;
+    try{const r=await api("/api/killport",{method:"POST",
+      body:JSON.stringify({port:+port,pid:+pid,force})});
+      toast(`stopped ${r.name}`);setTimeout(loadNet,700);}
+    catch(e){toast(e.message,false);}
+  };
+  $("#ports").querySelectorAll("[data-stop]").forEach(b=>
+    b.onclick=()=>stopPort(b.dataset.stop,b.dataset.pid,false));
+  $("#ports").querySelectorAll("[data-force]").forEach(b=>
+    b.onclick=()=>stopPort(b.dataset.force,b.dataset.pid,true));
+  $("#ports").querySelectorAll("[data-sudo]").forEach(b=>
+    b.onclick=()=>copyText("sudo kill "+b.dataset.sudo));
+}
+$("#netReload")&&($("#netReload").onclick=loadNet);
+$("#portQ")&&($("#portQ").oninput=renderPorts);
+$("#portPub")&&($("#portPub").onchange=renderPorts);
 
 /* ---- dev ---- */
 async function loadDev(){
   loadDocker();loadServices();loadTools();loadDockerStats();loadCompose();
+  loadContainers();
 }
+/* ---- other container environments: podman / nerdctl / LXD / kubernetes ---- */
+const CTR_STATE_DOT=s=>s==="running"?"🟢":s==="paused"?"🟡":
+  (s==="exited"||s==="stopped")?"⚪":"🔴";
+async function loadContainers(){
+  const panel=$("#ctrPanel");if(!panel)return;
+  try{
+    const d=await api("/api/containers");
+    // docker has its own panel above — only surface the *other* environments
+    const envs=d.envs.filter(e=>e.engine!=="docker");
+    const k8s=d.k8s;
+    if(!envs.length&&!k8s){panel.style.display="none";return;}
+    panel.style.display="";
+    let html=envs.map(e=>{
+      const head=`<h2 style="margin:6px 0 4px">${esc(e.engine)}
+        <span class="muted" style="font-weight:400">${esc(e.version||"")} ·
+        ${e.containers.length} container${e.containers.length===1?"":"s"}</span></h2>`;
+      if(e.error)return head+`<div class="muted" style="font-size:12.5px">⚠ ${esc(e.error)}</div>`;
+      if(!e.containers.length)return head+'<div class="muted" style="font-size:12.5px">no containers</div>';
+      return head+`<table><thead><tr><th>Name</th><th>Image</th><th>State</th>
+        <th>Ports</th><th></th></tr></thead><tbody>`+
+        e.containers.map(c=>`<tr>
+          <td><b>${esc(c.name)}</b></td>
+          <td class="mono" style="font-size:11.5px">${esc(c.image)}</td>
+          <td>${CTR_STATE_DOT(c.state)} ${esc(c.status||c.state)}</td>
+          <td class="mono" style="font-size:11px">${esc(c.ports||"—")}</td>
+          <td class="num" style="white-space:nowrap">${e.kind==="lxd"?"":
+            (c.state==="running"
+              ?`<button class="btn small" data-ct="stop" data-eng="${esc(e.engine)}" data-id="${esc(c.id)}">Stop</button>
+                <button class="btn small" data-ct="restart" data-eng="${esc(e.engine)}" data-id="${esc(c.id)}">Restart</button>
+                <button class="btn small" data-ctexec="${esc(c.id)}" data-eng="${esc(e.engine)}">Shell</button>`
+              :`<button class="btn small" data-ct="start" data-eng="${esc(e.engine)}" data-id="${esc(c.id)}">Start</button>
+                <button class="btn small danger" data-ct="rm" data-eng="${esc(e.engine)}" data-id="${esc(c.id)}">Remove</button>`)+
+            `<button class="btn small" data-ctlog="${esc(c.id)}" data-eng="${esc(e.engine)}">Logs</button>`}
+          </td></tr>`).join("")+`</tbody></table>`;
+    }).join("");
+    if(k8s){
+      html+=`<h2 style="margin:14px 0 4px">kubernetes
+        <span class="muted" style="font-weight:400">context ${esc(k8s.context||"—")} ·
+        ${k8s.pods.length} pod${k8s.pods.length===1?"":"s"}</span></h2>`;
+      html+=k8s.error?`<div class="muted" style="font-size:12.5px">⚠ ${esc(k8s.error)}</div>`
+        :k8s.pods.length?`<table><thead><tr><th>Namespace</th><th>Pod</th>
+          <th>Status</th><th class="num">Ready</th><th class="num">Restarts</th>
+          <th>Node</th><th></th></tr></thead><tbody>`+
+          k8s.pods.map(p=>`<tr>
+            <td class="muted">${esc(p.ns)}</td>
+            <td><b>${esc(p.name)}</b>${p.ip?`<div class="mono muted" style="font-size:10.5px">${esc(p.ip)}</div>`:""}</td>
+            <td>${p.phase==="Running"?"🟢":p.phase==="Succeeded"?"⚪":"🔴"} ${esc(p.phase)}</td>
+            <td class="num">${esc(p.ready)}</td>
+            <td class="num">${p.restarts}</td>
+            <td class="muted mono" style="font-size:11px">${esc(p.node||"")}</td>
+            <td class="num"><button class="btn small" data-ctlog="${esc(p.name)}"
+              data-eng="k8s" data-ns="${esc(p.ns)}">Logs</button></td></tr>`).join("")+
+          `</tbody></table>`
+        :'<div class="muted" style="font-size:12.5px">no pods</div>';
+    }
+    $("#ctrBody").innerHTML=html;
+    $("#ctrBody").querySelectorAll("[data-ct]").forEach(b=>b.onclick=async()=>{
+      if(b.dataset.ct==="rm"&&
+         !confirm("Remove this container? Its writable layer is lost."))return;
+      b.disabled=true;
+      try{await api("/api/ctraction",{method:"POST",body:JSON.stringify(
+        {engine:b.dataset.eng,id:b.dataset.id,action:b.dataset.ct})});
+        toast(`${b.dataset.eng} ${b.dataset.ct} ✓`);loadContainers();}
+      catch(e){toast(e.message,false);b.disabled=false;}});
+    $("#ctrBody").querySelectorAll("[data-ctlog]").forEach(b=>b.onclick=async()=>{
+      const pre=$("#ctrLogs");pre.style.display="block";pre.textContent="loading…";
+      try{const r=await api("/api/ctrlogs?engine="+encodeURIComponent(b.dataset.eng)+
+        "&id="+encodeURIComponent(b.dataset.ctlog)+
+        (b.dataset.ns?"&ns="+encodeURIComponent(b.dataset.ns):""));
+        pre.textContent=r.logs||"(no output)";pre.scrollTop=pre.scrollHeight;}
+      catch(e){pre.textContent="";toast(e.message,false);}});
+    $("#ctrBody").querySelectorAll("[data-ctexec]").forEach(b=>b.onclick=()=>
+      openInTerminal({name:b.dataset.eng,
+        cmd:`${b.dataset.eng} exec -it ${b.dataset.ctexec} sh -c 'exec bash 2>/dev/null || exec sh'`}));
+  }catch(e){panel.style.display="none";}
+}
+$("#ctrReload")&&($("#ctrReload").onclick=loadContainers);
 $("#dockerReload").onclick=()=>{loadDocker();loadDockerStats();loadCompose();};
 $("#dockerPruneImg")&&($("#dockerPruneImg").onclick=()=>{
   if(confirm("Remove all dangling images?"))
@@ -1673,6 +2155,7 @@ const MON_LABELS={cpu:"CPU above % (sustained 60 s)",mem:"Memory above %",
 async function loadMonitor(){
   try{
     const m=await api("/api/monitor");
+    if(m.ctl)renderAlertCtl(m.ctl);
     $("#monRules tbody").innerHTML=Object.entries(m.cfg).map(([k,r])=>`
       <tr><td style="width:30px"><input type="checkbox" class="mon-on" data-k="${k}" ${r.on?"checked":""}></td>
       <td>${esc(MON_LABELS[k]||k)}</td>
@@ -1804,6 +2287,49 @@ $("#monTest").onclick=async()=>{
     toast("test notification sent — check your notification area");}
   catch(e){toast(e.message,false);}
 };
+$("#monAllOn")&&($("#monAllOn").onclick=()=>{
+  document.querySelectorAll(".mon-on").forEach(c=>c.checked=true);
+  $("#monStat").textContent="all rules ticked — hit Save rules";});
+$("#monAllOff")&&($("#monAllOff").onclick=()=>{
+  document.querySelectorAll(".mon-on").forEach(c=>c.checked=false);
+  $("#monStat").textContent="all rules unticked — hit Save rules";});
+
+/* ---- alerting master switch (stop / start / snooze / clear history) ---- */
+let acCtl={enabled:true,until:0};
+function renderAlertCtl(ctl){
+  acCtl=ctl;
+  const on=ctl.enabled!==false;
+  const until=ctl.until?new Date(ctl.until*1000):null;
+  $("#acState").innerHTML=on
+    ?'🟢 alerting is on'
+    :(until?`⏸ snoozed until ${until.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}`
+           :"⏹ alerts stopped");
+  $("#acState").style.color=on?"":"var(--serious)";
+  $("#acToggle").textContent=on?"⏸ Stop alerts":"▶ Start alerts";
+  // an update badge on the nav tab makes a muted system obvious from any tab
+  const nav=document.querySelector('nav button[data-tab="monitor"]');
+  if(nav)nav.textContent=on?"🚨 Monitor":"🔕 Monitor";
+}
+async function alertCtl(action,minutes){
+  try{
+    const r=await api("/api/alertctl",{method:"POST",
+      body:JSON.stringify({action,minutes:minutes||0})});
+    renderAlertCtl(r.ctl);
+    toast(action==="clear"?"alert history cleared"
+      :action==="start"?"alerts started"
+      :action==="snooze"?`alerts snoozed for ${minutes} minutes`:"alerts stopped");
+    if(action==="clear")loadMonitor();
+  }catch(e){toast(e.message,false);}
+}
+$("#acToggle")&&($("#acToggle").onclick=()=>
+  alertCtl(acCtl.enabled===false?"start":"stop"));
+document.querySelectorAll("[data-snooze]").forEach(b=>
+  b.onclick=()=>alertCtl("snooze",+b.dataset.snooze));
+$("#acClear")&&($("#acClear").onclick=()=>{
+  if(confirm("Delete the recorded alert history? Rules and channels stay as they are."))
+    alertCtl("clear");});
+// reflect a stopped/snoozed state in the sidebar even before Monitor is opened
+(async()=>{try{renderAlertCtl(await api("/api/alertctl"));}catch(e){}})();
 
 
 /* ---- tools: json ---- */

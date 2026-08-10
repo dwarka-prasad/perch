@@ -2,6 +2,6 @@
 
 APP_NAME = "perch"
 DISPLAY_NAME = "Perch"
-VERSION = "1.0.0"
+VERSION = "1.3.0"
 DEFAULT_PORT = 9080
 TAGLINE = "Your machine, at a glance."
