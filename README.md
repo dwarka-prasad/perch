@@ -44,14 +44,26 @@ step, no cloud.
 ## What can you do with it?
 
 ### Monitor the system
-- **Overview** — live charts for CPU, memory, GPU, disk I/O, temperatures and
-  network, plus a hardware panel (model/BIOS, battery health & cycles, Wi-Fi
-  signal), a critical-log panel, and a **health scorecard** (score out of 100
-  with plain-language findings and one-click fixes). The home screen is
-  customizable with drag-to-reorder widgets.
+- **Overview** — a **fully customizable home screen**. Every item on it is a
+  widget you can drag to reorder, resize (small / medium / large / full width)
+  and remove, panels included — and **＋ Add widget** opens a gallery of
+  everything on offer. Out of the box you get live charts for CPU, memory, GPU,
+  disk I/O, temperatures and network, a **file search box**, a hardware panel
+  (model/BIOS, battery health & cycles, Wi-Fi signal), a critical-log panel and
+  a **health scorecard** (score out of 100 with plain-language findings and
+  one-click fixes). The gallery adds top processes, disk usage, listening
+  ports, containers & pods, recent alerts, pending updates, failed services,
+  git repositories, reclaimable space, quick-action shortcuts, a scratchpad, a
+  clock and network interfaces. Anything you remove goes back to the gallery,
+  so nothing is ever lost; the layout is saved in your browser and *reset
+  layout* restores the default.
 - **Monitor** — threshold alerts (CPU/mem/disk/temp…) with desktop
   notifications and outbound channels (ntfy, Slack, Discord, generic
   webhook), log-pattern watchers, and 24 h of one-minute history.
+  **Alerting has a master switch**: stop alerts entirely, snooze them for
+  15 min / 1 h / 4 h / 24 h (it resumes on its own), enable or disable every
+  rule at once, and clear the alert history. While alerting is off the
+  sidebar shows 🔕 and history keeps recording — only the alerts stop.
 - **Processes / Users / Logs / Kernel / Updates** — kill processes, inspect
   any process in a detail modal, browse the journal live, read kernel
   tunables, and see pending APT updates with a sidebar badge.
@@ -76,10 +88,16 @@ step, no cloud.
   and font zoom, with keyboard shortcuts (Ctrl+Shift+T/E/O/W/±).
 
   ![Terminal — split panes with tabs and fullscreen](docs/terminal.png)
-- **Network** — listening ports with kill-by-port, public IP, and a speed
-  test.
+- **Network** — listening ports showing which process (and command line) holds
+  each one, filterable by port/process/command, with **Stop** (SIGTERM) and
+  **Force** (SIGKILL) on the exact PID shown; public IP and a speed test.
+  Perch's own port is marked so you can't shut the dashboard on yourself.
 - **Dev** — Docker containers with live stats, logs, shell, compose control
-  and prune; systemd user services; toolchain overview.
+  and prune; systemd user services; toolchain overview. Perch also **detects
+  any other container environment** on the machine — Podman, nerdctl, LXD/Incus
+  and Kubernetes — and lists their containers (start/stop/restart/remove/shell/
+  logs) and pods (namespace, ready count, restarts, node, logs). Nothing is
+  shown for engines you don't have installed.
 - **Database** — browse SQLite files and PostgreSQL (host `psql` or a running
   container), read-only by default with opt-in writes.
 - **Git** — a dashboard of your repos: branch, dirty state, ahead/behind, with
@@ -120,7 +138,8 @@ step, no cloud.
   privileged actions.
 
 Everything is reachable through a **Ctrl+K command palette**, and the grouped
-sidebar shows live CPU/MEM/DISK mini-bars. Integrations that aren't installed
+sidebar scrolls on its own (independently of the page) with live CPU/MEM/DISK
+mini-bars pinned at the bottom. Integrations that aren't installed
 on your machine hide themselves automatically — and a **Simple mode** toggle
 (in Settings) hides the developer tabs entirely for a monitoring-and-settings
 dashboard aimed at non-technical users.
@@ -201,7 +220,11 @@ needs that token — bookmark the URL.
 | `PERCH_HOST` | `127.0.0.1` | Bind address (`0.0.0.0` to reach from LAN — still token-protected) |
 
 State (search index, alert history, screenshots) lives under
-`~/.cache/perch`; alert and app config under `~/.config/perch`.
+`~/.cache/perch`; alert and app config under `~/.config/perch` — including
+`alertctl.json`, which holds the alerting on/off/snooze state so it survives a
+restart. Your home-screen layout (widget order, sizes and which ones are
+shown) is per-browser and kept in `localStorage`, not on the server; *reset
+layout* on the Overview tab clears it.
 
 ## Security
 
@@ -228,8 +251,11 @@ python3 -m unittest discover -s tests -v
 ## Releasing
 
 CI (`.github/workflows/ci.yml`) lints, compiles, and builds the `.deb` and
-Docker image on every push/PR. To cut a release, bump the version in
-`packaging/debian/control` + `pyproject.toml`, then:
+Docker image on every push/PR. To cut a release, bump the version in all four
+places that carry it — `setup.cfg` (the package metadata; `pyproject.toml`
+deliberately holds none), `packaging/debian/control` (what `build-deb.sh`
+reads), `src/perch/config.py` and `src/perch/__init__.py` — add a
+`CHANGELOG.md` entry, then:
 
 ```bash
 git tag v1.0.0 && git push origin v1.0.0
