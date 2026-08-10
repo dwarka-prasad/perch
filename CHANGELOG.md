@@ -55,6 +55,8 @@
   the 1440-sample 24-hour history, so home widgets stay cheap).
 - Version metadata is now consistent across `setup.cfg`, `config.py`,
   `__init__.py` and the Debian control file, which had drifted apart.
+- Refreshed the README screenshots for the new home screen, and added ones for
+  home customization, the alerting switch and the port controls.
 
 ## 1.2.3
 

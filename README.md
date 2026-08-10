@@ -11,7 +11,7 @@ A local system + developer dashboard for Linux — monitoring, ops, a full
 developer toolbox, and an AI assistant, in one token-protected web app that
 runs on `127.0.0.1`.
 
-![Perch overview — live CPU/memory/network/GPU charts, alerts and hardware panel](docs/overview.png)
+![Perch overview — live CPU/memory/network/GPU charts, a file-search box and the health scorecard](docs/overview.png)
 
 </div>
 
@@ -57,6 +57,9 @@ step, no cloud.
   clock and network interfaces. Anything you remove goes back to the gallery,
   so nothing is ever lost; the layout is saved in your browser and *reset
   layout* restores the default.
+
+  ![Customize home — every widget has a size control and a remove button, and ＋ Add widget opens the gallery](docs/home-customize.png)
+
 - **Monitor** — threshold alerts (CPU/mem/disk/temp…) with desktop
   notifications and outbound channels (ntfy, Slack, Discord, generic
   webhook), log-pattern watchers, and 24 h of one-minute history.
@@ -64,6 +67,9 @@ step, no cloud.
   15 min / 1 h / 4 h / 24 h (it resumes on its own), enable or disable every
   rule at once, and clear the alert history. While alerting is off the
   sidebar shows 🔕 and history keeps recording — only the alerts stop.
+
+  ![Monitor — the alerting master switch with snooze buttons, above the threshold rules](docs/monitor-alerts.png)
+
 - **Processes / Users / Logs / Kernel / Updates** — kill processes, inspect
   any process in a detail modal, browse the journal live, read kernel
   tunables, and see pending APT updates with a sidebar badge.
@@ -92,6 +98,9 @@ step, no cloud.
   each one, filterable by port/process/command, with **Stop** (SIGTERM) and
   **Force** (SIGKILL) on the exact PID shown; public IP and a speed test.
   Perch's own port is marked so you can't shut the dashboard on yourself.
+
+  ![Network — listening ports with Stop and Force buttons, and Perch's own port marked](docs/network-ports.png)
+
 - **Dev** — Docker containers with live stats, logs, shell, compose control
   and prune; systemd user services; toolchain overview. Perch also **detects
   any other container environment** on the machine — Podman, nerdctl, LXD/Incus
