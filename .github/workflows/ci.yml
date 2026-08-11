@@ -54,6 +54,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # the harness speaks CDP over the global WebSocket, unflagged from Node 22
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Install runtime deps
         run: pip install psutil pyyaml
       - name: Drive the real app in headless Chrome
