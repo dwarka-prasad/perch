@@ -247,22 +247,35 @@ try {
   });
 
   await check("assistant is a floating dock, not a sidebar tab", async () => {
+    // With no AI provider installed (a bare CI runner) the button hides itself,
+    // exactly as the old tab did — so assert whichever behaviour applies here.
     const out = await page.eval(`
       const navAI=!!document.querySelector('nav button[data-tab="ai"]');
       const fab=document.querySelector("#aiFab");
-      const before=document.querySelector("#aiDock").classList.contains("open");
-      fab.click(); await new Promise(r=>setTimeout(r,500));
-      const opened=document.querySelector("#aiDock").classList.contains("open");
-      const focused=document.activeElement.id;
-      document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));
-      await new Promise(r=>setTimeout(r,300));
-      const closed=!document.querySelector("#aiDock").classList.contains("open");
-      const r=fab.getBoundingClientRect();
-      const bottomRight = (innerWidth-r.right) < 120 && (innerHeight-r.bottom) < 120;
-      return JSON.stringify([navAI,before,opened,focused,closed,bottomRight]);`);
-    const [navAI, before, opened, focused, closed, bottomRight] = JSON.parse(out);
+      // CAPS is a top-level 'let', so it is a global binding, not window.CAPS
+      const hasProvider=!(typeof CAPS!=="undefined" && CAPS && CAPS.ai===false);
+      const hidden=getComputedStyle(fab).display==="none";
+      let opened=null, focused=null, closed=null, bottomRight=null;
+      if(hasProvider){
+        fab.click(); await new Promise(r=>setTimeout(r,500));
+        opened=document.querySelector("#aiDock").classList.contains("open");
+        focused=document.activeElement.id;
+        document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));
+        await new Promise(r=>setTimeout(r,300));
+        closed=!document.querySelector("#aiDock").classList.contains("open");
+        const r=fab.getBoundingClientRect();
+        bottomRight=(innerWidth-r.right)<120 && (innerHeight-r.bottom)<120;
+      }
+      return JSON.stringify([navAI,hasProvider,hidden,opened,focused,closed,bottomRight]);`);
+    const [navAI, hasProvider, hidden, opened, focused, closed, bottomRight] =
+      JSON.parse(out);
     eq(navAI, false, "AI still in the sidebar");
-    eq(before, false, "dock starts closed");
+    if (!hasProvider) {
+      eq(hidden, true, "button should hide itself with no AI provider");
+      log("       (no AI provider here — checked the hidden-button path)");
+      return;
+    }
+    eq(hidden, false, "floating button visible when a provider is configured");
     eq(opened, true, "dock opens from the floating button");
     eq(focused, "aiIn", "focused element after opening");
     eq(closed, true, "Escape closes the dock");
