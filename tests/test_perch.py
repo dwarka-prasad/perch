@@ -672,6 +672,143 @@ class StaticPathContainment(unittest.TestCase):
         self.assertEqual((kind, code), ("send", 200))
 
 
+class InstalledPackages(unittest.TestCase):
+    APT = ("accountsservice\t22.07.5\t512\tquery user accounts\n"
+           "acl\t2.3.1\t192\taccess control lists\n"
+           "zlib1g\t1.2.11\t164\tcompression library\n")
+
+    def _listing(self, **kw):
+        orig_for, orig_upd = S._installed_for, S.pkg_updates
+        S._installed_for = lambda mgr: S._rows_from(
+            self.APT, ("name", "version", "size", "summary"), sizes_in_kb=True)
+        S.pkg_updates = lambda *a, **k: {"packages": [{"name": "acl"}]}
+        try:
+            return S.installed_packages(**kw)
+        finally:
+            S._installed_for, S.pkg_updates = orig_for, orig_upd
+
+    def test_parses_versions_and_sizes(self):
+        r = self._listing()
+        self.assertEqual(r["total"], 3)
+        first = r["packages"][0]
+        self.assertEqual(first["name"], "accountsservice")
+        self.assertEqual(first["version"], "22.07.5")
+        self.assertEqual(first["size"], 512 * 1024)   # dpkg reports KB
+
+    def test_filter_matches_name_and_summary(self):
+        self.assertEqual(self._listing(q="zlib")["matched"], 1)
+        self.assertEqual(self._listing(q="control lists")["matched"], 1)
+        self.assertEqual(self._listing(q="nothinghere")["matched"], 0)
+
+    def test_flags_upgradable_from_the_update_list(self):
+        by_name = {p["name"]: p for p in self._listing()["packages"]}
+        self.assertTrue(by_name["acl"]["upgradable"])
+        self.assertFalse(by_name["zlib1g"]["upgradable"])
+
+    def test_sort_by_size(self):
+        names = [p["name"] for p in self._listing(sort="size")["packages"]]
+        self.assertEqual(names[0], "accountsservice")
+
+    def test_limit_caps_and_reports_truncation(self):
+        r = self._listing(limit=2)
+        self.assertEqual(len(r["packages"]), 2)
+        self.assertTrue(r["truncated"])
+
+    def test_unknown_manager(self):
+        with self.assertRaises(ValueError):
+            S._installed_for("brew")
+
+    def test_malformed_rows_are_skipped(self):
+        rows = S._rows_from("good\t1.0\t10\tfine\n\n\t\t\t\n",
+                            ("name", "version", "size", "summary"))
+        self.assertEqual([r["name"] for r in rows], ["good"])
+
+    def test_non_numeric_size_does_not_explode(self):
+        rows = S._rows_from("pkg\t1.0\tunknown\tdesc\n",
+                            ("name", "version", "size", "summary"))
+        self.assertEqual(rows[0]["size"], 0)
+
+
+class PkgActionRouting(unittest.TestCase):
+    def setUp(self):
+        self.jobs = []
+        self._orig = S.start_job
+        S.start_job = lambda argv, title, privileged=False: (
+            self.jobs.append((argv, privileged)), {"id": "x"})[1]
+
+    def tearDown(self):
+        S.start_job = self._orig
+
+    def test_update_and_remove_route_per_manager(self):
+        if not S._PM:
+            self.skipTest("no native package manager on this machine")
+        S.pkg_install("native-update", "htop")
+        self.assertIn("htop", self.jobs[-1][0])
+        self.assertTrue(self.jobs[-1][1], "package changes must be privileged")
+        S.pkg_install("native-remove", "htop")
+        self.assertIn("htop", self.jobs[-1][0])
+
+    def test_snap_and_flatpak_updates(self):
+        S.pkg_install("snap-update", "code")
+        self.assertEqual(self.jobs[-1][0][:2], ["snap", "refresh"])
+        S.pkg_install("flatpak-update", "org.gimp.GIMP")
+        self.assertEqual(self.jobs[-1][0][:2], ["flatpak", "update"])
+        self.assertFalse(self.jobs[-1][1], "flatpak talks to polkit itself")
+
+    def test_bad_names_never_reach_a_command(self):
+        for bad in ("htop; rm -rf /", "--help", "$(id)", "", "a" * 200):
+            with self.assertRaises(ValueError):
+                S.pkg_install("native-update", bad)
+        self.assertEqual(self.jobs, [])
+
+    def test_unknown_manager_rejected(self):
+        with self.assertRaises(ValueError):
+            S.pkg_install("brew-update", "htop")
+
+
+class PerchVersionAndUpdate(unittest.TestCase):
+    def test_version_is_reported(self):
+        self.assertEqual(S.about_info()["version"], S.VERSION)
+        self.assertIn(S.about_info()["install"],
+                      ("git", "deb", "pip", "unknown"))
+
+    def test_about_exposes_where_things_live(self):
+        a = S.about_info()
+        for key in ("root", "python", "config_dir", "cache_dir", "repo", "port"):
+            self.assertIn(key, a)
+
+    def test_version_ordering(self):
+        newer = S._version_tuple
+        self.assertGreater(newer("1.4.0"), newer("1.3.9"))
+        self.assertGreater(newer("1.10.0"), newer("1.9.0"))
+        self.assertGreater(newer("v2.0.0"), newer("1.99.9"))
+        self.assertEqual(newer("1.4.0"), newer("v1.4.0"))
+        self.assertEqual(newer("garbage"), (0,))
+
+    def test_git_update_refuses_a_dirty_checkout(self):
+        orig = S._git
+        S._git = lambda *a, **k: __import__("subprocess").CompletedProcess(
+            a, 0, " M src/perch/server.py\n", "")
+        try:
+            if S.perch_install_kind() != "git":
+                self.skipTest("not a git checkout")
+            with self.assertRaises(ValueError) as cm:
+                S.perch_update_apply()
+            self.assertIn("uncommitted", str(cm.exception))
+        finally:
+            S._git = orig
+
+    def test_unknown_install_kind_explains_itself(self):
+        orig = S.perch_install_kind
+        S.perch_install_kind = lambda: "pip"
+        try:
+            with self.assertRaises(ValueError) as cm:
+                S.perch_update_apply()
+            self.assertIn("pip", str(cm.exception))
+        finally:
+            S.perch_install_kind = orig
+
+
 class HttpSmoke(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

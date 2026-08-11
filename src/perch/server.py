@@ -37,6 +37,11 @@ except ImportError:  # self-install the only external dependency
                     "--user", "psutil"], check=True)
     import psutil
 
+try:
+    from .config import VERSION
+except ImportError:      # loaded as a plain file rather than as a package
+    VERSION = "0.0.0"
+
 PORT = int(os.environ.get("PERCH_PORT") or
            (sys.argv[1] if len(sys.argv) > 1 and sys.argv[1].isdigit()
             else 9080))
@@ -2885,6 +2890,133 @@ def proc_detail(pid):
 # ------------------------------------------------------- caps / raw / yaml ---
 
 
+# ------------------------------------------------- about & self-update ------
+# Where this copy of Perch came from decides how it can be updated, so detect
+# the install method rather than guessing. Nothing here reaches the network
+# unless the user explicitly asks it to.
+
+PERCH_REPO = os.environ.get("PERCH_REPO", "dwarka-prasad/perch")
+PERCH_ROOT = os.path.realpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+
+
+def _version_tuple(v):
+    out = []
+    for part in re.split(r"[.-]", (v or "").lstrip("vV")):
+        if part.isdigit():
+            out.append(int(part))
+        else:
+            break
+    return tuple(out) or (0,)
+
+
+def perch_install_kind():
+    """git | deb | pip | unknown — how this copy was installed."""
+    if os.path.isdir(os.path.join(PERCH_ROOT, ".git")) and shutil.which("git"):
+        return "git"
+    here = os.path.abspath(__file__)
+    if shutil.which("dpkg"):
+        r = _run(["dpkg", "-S", here], capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and ":" in r.stdout:
+            return "deb"
+    if "site-packages" in here or "dist-packages" in here:
+        return "pip"
+    return "unknown"
+
+
+def _perch_service_state():
+    r = _run(["systemctl", "--user", "is-active", "perch.service"],
+             capture_output=True, text=True, timeout=8)
+    return r.stdout.strip() or "unknown"
+
+
+def about_info():
+    return {
+        "version": VERSION,
+        "install": perch_install_kind(),
+        "root": PERCH_ROOT,
+        "python": sys.version.split()[0],
+        "service": _perch_service_state(),
+        "config_dir": CFG_DIR,
+        "cache_dir": MON_DIR,
+        "repo": PERCH_REPO,
+        "host": HOST,
+        "port": PORT,
+    }
+
+
+def perch_update_check():
+    """Ask GitHub for the newest published release. Explicit, never automatic."""
+    import urllib.request as ur
+    url = f"https://api.github.com/repos/{PERCH_REPO}/releases/latest"
+    req = ur.Request(url, headers={"Accept": "application/vnd.github+json",
+                                   "User-Agent": "perch"})
+    try:
+        with ur.urlopen(req, timeout=15) as resp:
+            data = json.load(resp)
+    except Exception as e:  # noqa: BLE001 — offline is a normal answer here
+        raise ValueError(f"could not reach GitHub: {e}")
+    tag = (data.get("tag_name") or "").strip()
+    latest = tag.lstrip("vV")
+    deb = next((a["browser_download_url"] for a in data.get("assets", [])
+                if a.get("name", "").endswith(".deb")), None)
+    return {"current": VERSION, "latest": latest, "tag": tag,
+            "newer": _version_tuple(latest) > _version_tuple(VERSION),
+            "url": data.get("html_url", ""),
+            "published": data.get("published_at", ""),
+            "notes": (data.get("body") or "")[:4000],
+            "deb": deb, "install": perch_install_kind()}
+
+
+def _git(*args, timeout=60):
+    return _run(["git", "-C", PERCH_ROOT, *args], capture_output=True,
+                text=True, timeout=timeout)
+
+
+def perch_update_apply():
+    """Update in place. Refuses anything that could lose local work."""
+    kind = perch_install_kind()
+    if kind == "git":
+        if _git("status", "--porcelain").stdout.strip():
+            raise ValueError("this checkout has uncommitted changes — commit or "
+                             "stash them first, then update")
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        if branch == "HEAD":
+            raise ValueError("this checkout is on a detached HEAD — check out a "
+                             "branch first")
+        if not _git("rev-parse", "--abbrev-ref",
+                    "@{u}").stdout.strip():
+            raise ValueError(f"branch '{branch}' has no upstream to pull from")
+        return start_job(["git", "-C", PERCH_ROOT, "pull", "--ff-only"],
+                         f"Update Perch ({branch}, fast-forward only)")
+    if kind == "deb":
+        info = perch_update_check()
+        if not info["deb"]:
+            raise ValueError("the latest release has no .deb attached")
+        dest = os.path.join(MON_DIR, f"perch-{info['latest']}.deb")
+        os.makedirs(MON_DIR, exist_ok=True)
+        return start_job(
+            ["sh", "-c",
+             f"set -e; curl -fsSL -o {_sh_quote(dest)} {_sh_quote(info['deb'])}; "
+             f"apt-get install -y {_sh_quote(dest)}"],
+            f"Update Perch to {info['latest']} (.deb)", privileged=True)
+    raise ValueError(
+        f"this copy of Perch was installed with '{kind}' — update it the same "
+        "way you installed it (pip install --upgrade, or your distro package)")
+
+
+def perch_restart():
+    """Restart the user service, detached so it outlives this request."""
+    if _perch_service_state() == "unknown":
+        raise ValueError("not running under the perch user service — restart it "
+                         "the way you started it")
+    subprocess.Popen(
+        ["sh", "-c", "sleep 2; systemctl --user restart perch.service"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return {"ok": True, "restarting_in": 2}
+
+
 def capabilities():
     editor = next((e for e in ("code", "subl", "gedit") if shutil.which(e)),
                   None)
@@ -3040,6 +3172,12 @@ _PM_REMOVE = {
     "pacman": lambda n: ["pacman", "-R", "--noconfirm", n],
     "zypper": lambda n: ["zypper", "-n", "remove", n],
 }
+_PM_UPDATE_ONE = {
+    "apt": lambda n: ["apt-get", "install", "--only-upgrade", "-y", n],
+    "dnf": lambda n: ["dnf", "upgrade", "-y", n],
+    "pacman": lambda n: ["pacman", "-S", "--noconfirm", n],
+    "zypper": lambda n: ["zypper", "-n", "update", n],
+}
 _PM_UPGRADE = {
     "apt": ["sh", "-c", "apt-get update && apt-get upgrade -y"],
     "dnf": ["dnf", "upgrade", "-y"],
@@ -3132,6 +3270,111 @@ def pkg_search(q):
     return out
 
 
+# ---- everything installed, from every package manager present ----
+
+def _rows_from(out, cols, sizes_in_kb=False):
+    """Tab-separated query output -> package dicts."""
+    pkgs = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if not parts or not parts[0].strip():
+            continue
+        d = dict(zip(cols, [p.strip() for p in parts]))
+        try:
+            size = int(d.get("size") or 0) * (1024 if sizes_in_kb else 1)
+        except ValueError:
+            size = 0
+        pkgs.append({"name": d.get("name", ""), "version": d.get("version", ""),
+                     "size": size, "summary": (d.get("summary") or "")[:160]})
+    return pkgs
+
+
+def _installed_for(mgr):
+    """Full installed list for one manager, unsorted and unfiltered."""
+    cols = ("name", "version", "size", "summary")
+    if mgr == "native":
+        if _PM == "apt":
+            r = _run(["dpkg-query", "-W", "-f",
+                      "${Package}\t${Version}\t${Installed-Size}\t"
+                      "${binary:Summary}\n"],
+                     capture_output=True, text=True, timeout=30)
+            return _rows_from(r.stdout, cols, sizes_in_kb=True)
+        if _PM in ("dnf", "zypper"):
+            r = _run(["rpm", "-qa", "--qf",
+                      "%{NAME}\t%{VERSION}-%{RELEASE}\t%{SIZE}\t%{SUMMARY}\n"],
+                     capture_output=True, text=True, timeout=45)
+            return _rows_from(r.stdout, cols)
+        if _PM == "pacman":
+            if shutil.which("expac"):
+                r = _run(["expac", "-Q", "%n\t%v\t%m\t%d"],
+                         capture_output=True, text=True, timeout=30)
+                return _rows_from(r.stdout, cols)
+            r = _run(["pacman", "-Q"], capture_output=True, text=True, timeout=30)
+            return [{"name": p.split()[0], "version": p.split()[-1],
+                     "size": 0, "summary": ""}
+                    for p in r.stdout.splitlines() if p.strip()]
+        return []
+    if mgr == "snap":
+        if not _HAS_SNAP:
+            return []
+        r = _run(["snap", "list"], capture_output=True, text=True, timeout=25)
+        out = []
+        for line in r.stdout.splitlines()[1:]:      # drop the header row
+            f = line.split()
+            if len(f) >= 2:
+                out.append({"name": f[0], "version": f[1], "size": 0,
+                            "summary": " ".join(f[4:6]) if len(f) > 5 else ""})
+        return out
+    if mgr == "flatpak":
+        if not _HAS_FLATPAK:
+            return []
+        r = _run(["flatpak", "list", "--app",
+                  "--columns=application,version,size,name"],
+                 capture_output=True, text=True, timeout=25)
+        out = []
+        for line in r.stdout.splitlines():
+            f = [x.strip() for x in line.split("\t")]
+            if f and f[0]:
+                out.append({"name": f[0], "version": f[1] if len(f) > 1 else "",
+                            "size": 0,
+                            "summary": (f[3] if len(f) > 3 else "")[:160]})
+        return out
+    raise ValueError("unknown package manager")
+
+
+def installed_packages(mgr="native", q="", limit=300, sort="name"):
+    """Installed packages for one manager, filtered and capped.
+
+    The full list is thousands of rows on a normal desktop, so filtering and
+    the cap happen here rather than shipping it all to the browser.
+    """
+    pkgs = _installed_for(mgr)
+    total = len(pkgs)
+    q = (q or "").strip().lower()
+    if q:
+        pkgs = [p for p in pkgs
+                if q in p["name"].lower() or q in p["summary"].lower()]
+    upgradable = set()
+    if mgr == "native":
+        try:
+            upgradable = {p["name"] for p in pkg_updates()["packages"]}
+        except Exception:  # noqa: BLE001 — the list is still useful without it
+            pass
+    for p in pkgs:
+        p["upgradable"] = p["name"] in upgradable
+    if sort == "size":
+        pkgs.sort(key=lambda p: -p["size"])
+    else:
+        pkgs.sort(key=lambda p: p["name"].lower())
+    try:
+        limit = max(1, min(2000, int(limit)))
+    except (TypeError, ValueError):
+        limit = 300
+    return {"mgr": mgr, "pm": _PM, "total": total, "matched": len(pkgs),
+            "packages": pkgs[:limit], "truncated": len(pkgs) > limit,
+            "bytes": sum(p["size"] for p in pkgs)}
+
+
 def pkg_install(mgr, name):
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.+_-]{0,80}", name):
         raise ValueError("invalid package name")
@@ -3153,6 +3396,15 @@ def pkg_install(mgr, name):
     if mgr == "flatpak-remove":
         return start_job(["flatpak", "uninstall", "-y", name],
                          f"Remove {name} (flatpak)")
+    if mgr in ("native-update", "apt-update") and _PM:
+        return start_job(_PM_UPDATE_ONE[_PM](name),
+                         f"Update {name} ({_PM})", privileged=True)
+    if mgr == "snap-update":
+        return start_job(["snap", "refresh", name],
+                         f"Update {name} (snap)", privileged=True)
+    if mgr == "flatpak-update":
+        return start_job(["flatpak", "update", "-y", "--noninteractive", name],
+                         f"Update {name} (flatpak)")
     raise ValueError("unknown package manager")
 
 
@@ -4517,6 +4769,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(docker_disk())
             if route == "/api/homelayout":
                 return self._json(home_layout())
+            if route == "/api/about":
+                return self._json(about_info())
+            if route == "/api/perchupdate":
+                return self._json(perch_update_check())
+            if route == "/api/installed":
+                return self._json(installed_packages(
+                    qs.get("mgr", ["native"])[0], qs.get("q", [""])[0],
+                    qs.get("limit", ["300"])[0], qs.get("sort", ["name"])[0]))
             if route == "/api/dupes":
                 return self._json(find_duplicates(
                     qs.get("path", [""])[0], qs.get("min", ["1"])[0],
@@ -4701,6 +4961,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(firewall_rules_job())
             if route == "/api/smart":
                 return self._json(smart_job(body.get("device", "")))
+            if route == "/api/perchupdate":
+                return self._json(perch_update_apply())
+            if route == "/api/perchrestart":
+                return self._json(perch_restart())
             if route == "/api/health":
                 return self._json(health_report())
             return self._err("not found", 404)

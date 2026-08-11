@@ -158,8 +158,17 @@ step, no cloud.
   blur, the gradient backdrop, glows and animations for low-powered machines.
 - **Packages** — search, install, remove and upgrade across your native
   package manager (**apt, dnf, pacman or zypper**, auto-detected) plus **snap**
-  and **flatpak** when present. A system password dialog (`pkexec`) appears for
-  privileged actions.
+  and **flatpak** when present. Also lists **everything already installed**
+  from every manager, with version, size and description, filterable and
+  sortable, an *only updatable* toggle, and per-package **Update** and
+  **Remove**. A system password dialog (`pkexec`) appears for privileged
+  actions and the live output streams into the job box.
+- **About & self-update** — Settings shows the running version (also next to
+  the name in the sidebar), how this copy was installed, where it lives and
+  which directories it uses. **Check for updates** asks GitHub for the newest
+  published release and shows its notes; **Update now** fast-forwards a git
+  checkout or installs the release `.deb`, depending on how you installed it,
+  and refuses rather than risk a checkout with uncommitted work.
 
 Everything is reachable through a **Ctrl+K command palette**, the assistant is
 one click away in the bottom-right corner from any tab, and the grouped

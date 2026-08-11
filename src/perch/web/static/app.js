@@ -44,7 +44,7 @@ document.querySelectorAll("nav button[data-tab]").forEach(b=>b.onclick=()=>{
     net:loadNet,dev:loadDev,kernel:loadKernel,
     logs:()=>{if(!$("#logView").innerHTML)loadLogs(false);},
     monitor:loadMonitor,
-    updates:loadUpdates,packages:()=>$("#pkgQ").focus(),
+    updates:loadUpdates,packages:()=>{$("#pkgQ").focus();loadInstalled();},
     settings:loadSettings,runtimes:loadRuntimes,term:openTerminal,
     db:loadDb,git:loadGit,api:loadApiClient,tools:loadSched}[b.dataset.tab]||(()=>{}))();
 });
@@ -369,9 +369,129 @@ async function pkgSearch(){
 $("#pkgGo").onclick=pkgSearch;
 $("#pkgQ").onkeydown=e=>{if(e.key==="Enter")pkgSearch();};
 
+/* ---- about & self-update ---- */
+let aboutInfo=null;
+const INSTALL_LABEL={git:"git checkout",deb:"Debian package",pip:"pip install",
+  unknown:"unknown"};
+async function loadAbout(){
+  try{
+    aboutInfo=await api("/api/about");
+    const a=aboutInfo;
+    $("#brandVer").textContent="v"+a.version;
+    $("#aboutVer").textContent=`— version ${a.version}`;
+    const kv=(k,v)=>v?`<div style="display:flex;gap:8px;padding:3px 0;
+      border-bottom:1px solid var(--grid)"><span class="muted"
+      style="width:130px;flex:none">${k}</span>
+      <span class="mono" style="font-size:11.5px;word-break:break-all">${esc(v)}</span></div>`:"";
+    $("#aboutBody").innerHTML=
+      kv("Version",a.version)+
+      kv("Installed as",INSTALL_LABEL[a.install]||a.install)+
+      kv("Location",a.root)+
+      kv("Python",a.python)+
+      kv("Service",a.service)+
+      kv("Listening on",`${a.host}:${a.port}`)+
+      kv("Config",a.config_dir)+
+      kv("Cache",a.cache_dir)+
+      kv("Updates from",a.repo);
+  }catch(e){$("#aboutBody").textContent="version info unavailable";}
+}
+$("#updCheck")&&($("#updCheck").onclick=async()=>{
+  $("#updStat").textContent="asking GitHub…";
+  $("#updApply").style.display="none";$("#updNotes").style.display="none";
+  try{
+    const u=await api("/api/perchupdate");
+    if(u.newer){
+      $("#updStat").innerHTML=`<b style="color:var(--s2)">${esc(u.latest)} is available</b>
+        (you have ${esc(u.current)})`;
+      $("#updApply").style.display="";
+      $("#updApply").textContent=`Update to ${u.latest}`;
+      $("#brandVer").textContent="v"+u.current+" ▲";
+      $("#brandVer").classList.add("new");
+      $("#brandVer").title=`${u.latest} is available — see Settings › About`;
+      if(u.notes){$("#updNotes").style.display="";
+        $("#updNotes").textContent=u.notes;}
+    }else{
+      $("#updStat").textContent=`you're on the latest release (${u.current})`;
+    }
+  }catch(e){$("#updStat").textContent="";toast(e.message,false);}
+});
+$("#updApply")&&($("#updApply").onclick=async()=>{
+  const how=aboutInfo&&aboutInfo.install;
+  if(!confirm(how==="git"
+    ?"Fast-forward this checkout to the latest release and then restart Perch?"
+    :"Download the latest release and install it?\nA password dialog appears."))return;
+  try{
+    await runJob(api("/api/perchupdate",{method:"POST",body:"{}"}));
+    $("#updStat").innerHTML='updated — <b>restart Perch</b> to run the new version';
+  }catch(e){toast(e.message,false);}
+});
+$("#perchRestart")&&($("#perchRestart").onclick=async()=>{
+  if(!confirm("Restart the Perch service?\nThis page will reconnect in a few seconds."))return;
+  try{await api("/api/perchrestart",{method:"POST",body:"{}"});
+    toast("restarting — reloading shortly");
+    setTimeout(()=>location.reload(),6000);}
+  catch(e){toast(e.message,false);}
+});
+
+/* ---- installed packages (every manager present) ---- */
+let instMgr="native",instData=null;
+async function loadInstalled(){
+  const tb=$("#instTable tbody");if(!tb)return;
+  tb.innerHTML='<tr><td colspan=4 class="muted" style="padding:12px">reading the package database…</td></tr>';
+  try{
+    instData=await api("/api/installed?mgr="+encodeURIComponent(instMgr)+
+      "&q="+encodeURIComponent(($("#instQ").value||"").trim())+
+      "&sort="+encodeURIComponent($("#instSort").value));
+    renderInstalled();
+  }catch(e){tb.innerHTML=`<tr><td colspan=4 class="muted" style="padding:12px">${esc(e.message)}</td></tr>`;}
+}
+function renderInstalled(){
+  const d=instData;if(!d)return;
+  const onlyUpg=$("#instUpg").checked;
+  const rows=d.packages.filter(p=>!onlyUpg||p.upgradable);
+  $("#instCount").textContent=`— ${d.total} installed`+
+    (d.matched!==d.total?` · ${d.matched} match`:"")+
+    (d.bytes?` · ${fmtB(d.bytes)}`:"");
+  const sfx={native:"native",snap:"snap",flatpak:"flatpak"}[d.mgr];
+  $("#instTable tbody").innerHTML=rows.map(p=>`
+    <tr><td><b>${esc(p.name)}</b>
+      ${p.upgradable?'<span class="pill" style="border-color:var(--s2);color:var(--s2);font-size:10.5px">update</span>':""}
+      ${p.summary?`<div class="muted" style="font-size:11px;max-width:520px;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.summary)}</div>`:""}</td>
+    <td class="mono" style="font-size:11.5px">${esc(p.version)}</td>
+    <td class="num">${p.size?fmtB(p.size):"—"}</td>
+    <td class="num" style="white-space:nowrap">
+      <button class="btn small" data-pkgup="${esc(p.name)}" data-sfx="${sfx}">Update</button>
+      <button class="btn small danger" data-pkgrm="${esc(p.name)}" data-sfx="${sfx}">Remove</button>
+    </td></tr>`).join("")
+    ||`<tr><td colspan=4 class="muted" style="padding:12px">no packages match</td></tr>`;
+  if(d.truncated)$("#instCount").textContent+=" · showing the first "+d.packages.length;
+  $("#instTable").querySelectorAll("[data-pkgup]").forEach(b=>b.onclick=()=>
+    runJob(api("/api/pkginstall",{method:"POST",body:JSON.stringify(
+      {mgr:b.dataset.sfx+"-update",name:b.dataset.pkgup})})));
+  $("#instTable").querySelectorAll("[data-pkgrm]").forEach(b=>b.onclick=()=>{
+    if(!confirm(`Remove ${b.dataset.pkgrm}?\n\nAnything depending on it may be `+
+      `removed too — the package manager lists what it will do in the job output.`))return;
+    runJob(api("/api/pkginstall",{method:"POST",body:JSON.stringify(
+      {mgr:b.dataset.sfx+"-remove",name:b.dataset.pkgrm})}));});
+}
+$("#instMgr")&&$("#instMgr").querySelectorAll("[data-mgr]").forEach(b=>b.onclick=()=>{
+  if(b.dataset.mgr===instMgr)return;
+  $("#instMgr").querySelectorAll("button").forEach(x=>x.classList.remove("on"));
+  b.classList.add("on");instMgr=b.dataset.mgr;
+  // a filter typed for one manager almost never matches the next one, and an
+  // empty table reads as "nothing installed" rather than "nothing matched"
+  $("#instQ").value="";$("#instUpg").checked=false;
+  loadInstalled();});
+$("#instQ")&&($("#instQ").oninput=()=>{clearTimeout(window._instq);
+  window._instq=setTimeout(loadInstalled,350);});
+$("#instSort")&&($("#instSort").onchange=loadInstalled);
+$("#instUpg")&&($("#instUpg").onchange=renderInstalled);
+$("#instReload")&&($("#instReload").onclick=loadInstalled);
+
 /* ---- settings ---- */
 async function loadSettings(){
-  loadLLM();
+  loadLLM();loadAbout();
   try{
     const s=await api("/api/settings");
     const slider=(id,label,val,min,max,unit,key)=>`
@@ -1785,6 +1905,7 @@ function applyCaps(){
     $("#codeHere").textContent="⌨ Editor here";
 }
 loadCaps();
+loadAbout();
 
 /* ---- in-dashboard preview (no desktop apps needed) ---- */
 async function showPreview(path,kind){

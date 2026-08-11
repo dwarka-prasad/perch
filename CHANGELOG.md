@@ -2,6 +2,29 @@
 
 ## 1.4.0
 
+- **Everything you have installed, in one list.** The Packages tab now shows
+  installed software from every manager present — your native one (**apt, dnf,
+  pacman or zypper**), **snap** and **flatpak** — with version, size and
+  description, filterable by name or description, sortable by name or size, and
+  with an *only updatable* toggle. Each row has **Update** and **Remove**, which
+  act on that one package through a password prompt with live output. Filtering
+  and the row cap happen on the server, because a normal desktop has a couple of
+  thousand packages.
+- **Perch tells you what version it is.** The running version sits next to the
+  name in the sidebar, and a new **About Perch** panel in Settings shows the
+  version, how this copy was installed (git checkout / Debian package / pip),
+  where it lives, the Python version, service state, and its config and cache
+  directories. The version now comes from `config.py`, which the server had
+  never actually imported — which is how it drifted to `1.0.0` unnoticed.
+- **Update Perch to the latest stable release** from About. *Check for updates*
+  asks GitHub for the newest published release and shows the release notes —
+  the only thing in Perch that reaches the network, and only when you press the
+  button. *Update now* then does the right thing for how this copy was
+  installed: a fast-forward `git pull` for a checkout, or download-and-install
+  the release `.deb`. It refuses rather than risks anything: a checkout with
+  uncommitted changes, a detached HEAD, or a branch with no upstream all stop
+  with an explanation instead of a merge. A **Restart Perch** button applies the
+  new version, detached so it survives the restart it triggers.
 - **Custom alert rules** — the five built-in thresholds only covered
   machine-wide metrics. You can now add your own rules for the specific things
   a machine is supposed to be doing: a **systemd user unit that stopped

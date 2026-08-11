@@ -269,6 +269,32 @@ try {
     eq(bottomRight, true, "floating button anchored bottom-right");
   });
 
+  await check("installed packages list with update/remove actions", async () => {
+    const out = await page.eval(`
+      goTab("packages"); await new Promise(r=>setTimeout(r,5000));
+      const rows=document.querySelectorAll("#instTable tbody tr").length;
+      const acts=document.querySelectorAll("#instTable [data-pkgup]").length
+               && document.querySelectorAll("#instTable [data-pkgrm]").length;
+      const count=document.querySelector("#instCount").textContent;
+      return JSON.stringify([rows, !!acts, count]);`);
+    const [rows, acts, count] = JSON.parse(out);
+    atLeast(rows, 1, "installed package rows");
+    eq(acts, true, "update/remove buttons present");
+    if (!/installed/.test(count)) throw new Error(`count line reads ${count}`);
+  });
+
+  await check("about panel reports the running version", async () => {
+    const out = await page.eval(`
+      goTab("settings"); await new Promise(r=>setTimeout(r,2500));
+      return JSON.stringify([document.querySelector("#brandVer").textContent,
+                             document.querySelector("#aboutVer").textContent,
+                             document.querySelector("#aboutBody").innerText.length]);`);
+    const [brand, about, bodyLen] = JSON.parse(out);
+    if (!/^v\d+\.\d+/.test(brand)) throw new Error(`sidebar version reads ${brand}`);
+    if (!/version \d+\.\d+/.test(about)) throw new Error(`about reads ${about}`);
+    atLeast(bodyLen, 40, "about panel content");
+  });
+
   await check("every tab opens without throwing", async () => {
     const errs = await page.eval(`
       const tabs=[...document.querySelectorAll("nav button[data-tab]")]
