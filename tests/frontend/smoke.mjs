@@ -246,6 +246,29 @@ try {
     eq(self, true, "own port marked as Perch itself");
   });
 
+  await check("assistant is a floating dock, not a sidebar tab", async () => {
+    const out = await page.eval(`
+      const navAI=!!document.querySelector('nav button[data-tab="ai"]');
+      const fab=document.querySelector("#aiFab");
+      const before=document.querySelector("#aiDock").classList.contains("open");
+      fab.click(); await new Promise(r=>setTimeout(r,500));
+      const opened=document.querySelector("#aiDock").classList.contains("open");
+      const focused=document.activeElement.id;
+      document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));
+      await new Promise(r=>setTimeout(r,300));
+      const closed=!document.querySelector("#aiDock").classList.contains("open");
+      const r=fab.getBoundingClientRect();
+      const bottomRight = (innerWidth-r.right) < 120 && (innerHeight-r.bottom) < 120;
+      return JSON.stringify([navAI,before,opened,focused,closed,bottomRight]);`);
+    const [navAI, before, opened, focused, closed, bottomRight] = JSON.parse(out);
+    eq(navAI, false, "AI still in the sidebar");
+    eq(before, false, "dock starts closed");
+    eq(opened, true, "dock opens from the floating button");
+    eq(focused, "aiIn", "focused element after opening");
+    eq(closed, true, "Escape closes the dock");
+    eq(bottomRight, true, "floating button anchored bottom-right");
+  });
+
   await check("every tab opens without throwing", async () => {
     const errs = await page.eval(`
       const tabs=[...document.querySelectorAll("nav button[data-tab]")]

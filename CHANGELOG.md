@@ -39,6 +39,11 @@
   widget gallery, layout persistence across a reload, the alerting switch,
   custom rules, port filtering, and every tab opening without a console error.
   Run locally with `make test-frontend`.
+- **The assistant moved out of the sidebar** into a floating button in the
+  bottom-right corner that opens it as a docked chat panel over the current
+  page. Asking about the tab you're looking at no longer means navigating away
+  from it. **Ctrl+I** toggles it, Esc closes it, and the panel shows which
+  provider and model are answering. `#ai` still works as a deep link.
 - Static file serving now proves containment with `realpath` instead of
   stripping `..` from the request path — a blocklist that has to be re-proved
   correct every time input encoding changes.

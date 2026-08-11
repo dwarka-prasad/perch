@@ -136,7 +136,10 @@ step, no cloud.
   **scheduled-tasks manager** (edit crontab, enable/disable systemd timers).
 
 ### AI assistant
-- Chat about your machine with a live system snapshot injected, and generate
+- A **floating button in the bottom-right corner** opens the assistant as a
+  docked chat panel over whatever you're looking at — so you can ask about the
+  tab you're on without navigating away from it (**Ctrl+I**, or Esc to close).
+  Chat about your machine with a live system snapshot injected, and generate
   a one-click **health report**. The provider is pluggable: the local Claude
   CLI (default, no API key), the Anthropic API, any OpenAI-compatible
   endpoint, or a local Ollama model — configured in Settings.
@@ -158,7 +161,8 @@ step, no cloud.
   and **flatpak** when present. A system password dialog (`pkexec`) appears for
   privileged actions.
 
-Everything is reachable through a **Ctrl+K command palette**, and the grouped
+Everything is reachable through a **Ctrl+K command palette**, the assistant is
+one click away in the bottom-right corner from any tab, and the grouped
 sidebar scrolls on its own (independently of the page) with live CPU/MEM/DISK
 mini-bars pinned at the bottom. Integrations that aren't installed
 on your machine hide themselves automatically — and a **Simple mode** toggle

@@ -43,7 +43,7 @@ document.querySelectorAll("nav button[data-tab]").forEach(b=>b.onclick=()=>{
     search:()=>{$("#sq").focus();searchStatus();},
     net:loadNet,dev:loadDev,kernel:loadKernel,
     logs:()=>{if(!$("#logView").innerHTML)loadLogs(false);},
-    ai:()=>$("#aiIn").focus(),monitor:loadMonitor,
+    monitor:loadMonitor,
     updates:loadUpdates,packages:()=>$("#pkgQ").focus(),
     settings:loadSettings,runtimes:loadRuntimes,term:openTerminal,
     db:loadDb,git:loadGit,api:loadApiClient,tools:loadSched}[b.dataset.tab]||(()=>{}))();
@@ -205,8 +205,9 @@ const PAL_ITEMS=[
      ["logs","📜 Logs"],["kernel","🧬 Kernel"],["updates","📦 Updates"],
      ["users","👤 Users"],["storage","💾 Storage"],["files","📁 Files"],
      ["search","🔍 Search"],["clean","🧹 Clean up"],["net","🌐 Network"],
-     ["dev","🧰 Dev"],["tools","🔧 Tools"],["ai","✨ AI"]]
+     ["dev","🧰 Dev"],["tools","🔧 Tools"]]
     .map(([t,l])=>({label:l,hint:"tab",act:()=>goTab(t)})),
+  {label:"✨ Ask the assistant",hint:"action",act:()=>aiOpen()},
   {label:"🔁 Rebuild file index",hint:"action",act:()=>$("#reindex").click()},
   {label:"🔔 Send test notification",hint:"action",act:()=>$("#monTest").click()},
   {label:"⏸ Stop / start alerts",hint:"action",
@@ -1103,6 +1104,7 @@ async function loadLLM(){
     $("#llmKeyState").textContent=c.has_key?"✓ key saved":"no key set";
     $("#llmKey").value="";
     llmSyncFields();
+    aiSetProvider(c);
   }catch(e){}
 }
 $("#llmProvider")&&($("#llmProvider").onchange=()=>{
@@ -1765,8 +1767,7 @@ applyReduceFx();
 let CAPS=null;
 async function loadCaps(){
   try{CAPS=await api("/api/caps");applyCaps();
-    if(!CAPS.ai){const b=document.querySelector('nav button[data-tab="ai"]');
-      if(b)b.style.display="none";}
+    if(!CAPS.ai){const b=$("#aiFab");if(b)b.style.display="none";aiClose();}
   }catch(e){}
 }
 function applyCaps(){
@@ -2765,7 +2766,47 @@ $("#logFollow").onchange=()=>{
   }else stopFollow();
 };
 
-/* ---- ai ---- */
+/* ---- ai: floating dock (bottom-right), not a tab ---- */
+const AI_PROVIDER_LABEL={"claude-cli":"local Claude Code",anthropic:"Anthropic API",
+  openai:"OpenAI-compatible",ollama:"Ollama (local)"};
+function aiSetProvider(c){
+  const el=$("#aiProv");if(!el||!c)return;
+  el.textContent=(AI_PROVIDER_LABEL[c.provider]||c.provider||"")+
+    (c.model?` · ${c.model}`:"");
+}
+let aiProvLoaded=false;
+function aiOpen(){
+  if(CAPS&&CAPS.ai===false){toast("no AI provider configured — set one in Settings",false);return;}
+  // the provider label is only known from the server; fetch it once, lazily
+  if(!aiProvLoaded){aiProvLoaded=true;
+    api("/api/llm").then(aiSetProvider).catch(()=>{});}
+  $("#aiDock").classList.add("open");
+  $("#aiFab").classList.add("on");
+  $("#aiFab").textContent="✕";
+  $("#aiFab").title="Close the assistant (Esc)";
+  setTimeout(()=>$("#aiIn").focus(),60);
+  const c=$("#aiChat");c.scrollTop=c.scrollHeight;
+}
+function aiClose(){
+  $("#aiDock").classList.remove("open");
+  $("#aiFab").classList.remove("on");
+  $("#aiFab").textContent="✨";
+  $("#aiFab").title="Ask the assistant (Ctrl+I)";
+}
+function aiToggle(){
+  $("#aiDock").classList.contains("open")?aiClose():aiOpen();
+}
+$("#aiFab")&&($("#aiFab").onclick=aiToggle);
+$("#aiClose")&&($("#aiClose").onclick=aiClose);
+document.addEventListener("keydown",e=>{
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="i"&&!e.shiftKey){
+    e.preventDefault();aiToggle();return;}
+  if(e.key==="Escape"&&$("#aiDock").classList.contains("open")
+     &&!$("#pal").classList.contains("open"))aiClose();
+});
+// #ai still works as a deep link, it just opens the dock instead of a tab
+if(location.hash.replace("#","")==="ai")setTimeout(aiOpen,300);
+
 function aiBubble(cls,text){
   const div=document.createElement("div");
   div.className="bubble "+cls;div.textContent=text;
