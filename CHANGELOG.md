@@ -25,6 +25,12 @@
   uncommitted changes, a detached HEAD, or a branch with no upstream all stop
   with an explanation instead of a merge. A **Restart Perch** button applies the
   new version, detached so it survives the restart it triggers.
+- **JSON ↔ escaped string** in the Tools tab. *JSON → string* minifies and
+  escapes a document so it can be pasted as a string value inside another one
+  (a ConfigMap entry, a Terraform variable, an env var); *String → JSON*
+  reverses it, accepting the string with or without its surrounding quotes —
+  which is the shape you get when you copy a payload out of a log line. If the
+  unescaped contents aren't JSON it still unescapes them and says so.
 - **Custom alert rules** — the five built-in thresholds only covered
   machine-wide metrics. You can now add your own rules for the specific things
   a machine is supposed to be doing: a **systemd user unit that stopped

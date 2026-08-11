@@ -130,7 +130,9 @@ step, no cloud.
 - **Runtimes** — detect installed language runtimes, switch defaults (rustup,
   `update-alternatives`), and manage **SSH keys** (list, fingerprint, copy
   public key, generate ed25519).
-- **Tools** — JSON format/sort/extract, YAML ↔ JSON, base64/URL/epoch/UUID/
+- **Tools** — JSON format/sort/extract, **JSON ↔ escaped string** (for
+  embedding a document in another one, and for reading it back out of a log
+  line), YAML ↔ JSON, base64/URL/epoch/UUID/
   JWT/SHA-256 converters, regex tester, text diff, cron explainer, color and
   case converters, secret generator, website screenshot preview, and a
   **scheduled-tasks manager** (edit crontab, enable/disable systemd timers).

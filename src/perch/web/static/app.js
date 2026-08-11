@@ -2662,10 +2662,35 @@ document.querySelectorAll("[data-j]").forEach(b=>b.onclick=async()=>{
     catch(e){$("#jStat").textContent="⚠ "+e.message;toast(e.message,false);}
     return;
   }
+  // unescaping runs on the raw text: the input is a string literal, which is
+  // only valid JSON on its own when it still has its surrounding quotes
+  if(act==="unstr"){
+    const raw=$("#jIn").value.trim();
+    if(!raw){$("#jStat").textContent="⚠ nothing to unescape";return;}
+    let inner;
+    try{
+      inner=(raw.startsWith('"')&&raw.endsWith('"'))
+        ?JSON.parse(raw)                 // "{\"a\":1}"
+        :JSON.parse('"'+raw+'"');        // {\"a\":1}  — quotes omitted
+    }catch(e){
+      $("#jStat").textContent="⚠ not an escaped string: "+e.message;
+      toast("not an escaped JSON string",false);return;
+    }
+    try{
+      $("#jOut").value=JSON.stringify(JSON.parse(inner),null,2);
+      $("#jStat").textContent="unescaped and formatted ✓";
+    }catch(e){                            // valid escaping, but not JSON inside
+      $("#jOut").value=inner;
+      $("#jStat").textContent="unescaped ✓ (contents aren't JSON)";
+    }
+    return;
+  }
   const o=jParse();if(o===undefined)return;
   if(act==="fmt")$("#jOut").value=JSON.stringify(o,null,2);
   if(act==="min")$("#jOut").value=JSON.stringify(o);
   if(act==="sort")$("#jOut").value=JSON.stringify(jSort(o),null,2);
+  // minified first, so the embedded copy carries no formatting whitespace
+  if(act==="str")$("#jOut").value=JSON.stringify(JSON.stringify(o));
   if(act==="keys"){const ks=[...jKeys(o)].join("\n");
     $("#jOut").value=ks;copyText(ks);
     $("#jStat").textContent=ks.split("\n").length+" key paths copied";}

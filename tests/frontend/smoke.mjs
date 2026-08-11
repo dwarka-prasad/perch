@@ -295,6 +295,25 @@ try {
     atLeast(bodyLen, 40, "about panel content");
   });
 
+  await check("JSON tools escape and unescape round-trip", async () => {
+    const out = await page.eval(`
+      goTab("tools"); await new Promise(r=>setTimeout(r,600));
+      const src='{"a":1,"b":"say \\\\"hi\\\\"","c":[1,2]}';
+      const inp=document.querySelector("#jIn"), outp=document.querySelector("#jOut");
+      inp.value=src;
+      document.querySelector('[data-j="str"]').click();
+      const escaped=outp.value;
+      inp.value=escaped;
+      document.querySelector('[data-j="unstr"]').click();
+      const back=outp.value;
+      return JSON.stringify([src, escaped, back]);`);
+    const [src, escaped, back] = JSON.parse(out);
+    if (!escaped.startsWith('"') || !escaped.includes('\\"'))
+      throw new Error(`escape produced ${escaped}`);
+    if (JSON.stringify(JSON.parse(back)) !== JSON.stringify(JSON.parse(src)))
+      throw new Error(`round-trip changed the document: ${back}`);
+  });
+
   await check("every tab opens without throwing", async () => {
     const errs = await page.eval(`
       const tabs=[...document.querySelectorAll("nav button[data-tab]")]
