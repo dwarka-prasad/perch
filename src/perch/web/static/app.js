@@ -43,8 +43,8 @@ document.querySelectorAll("nav button[data-tab]").forEach(b=>b.onclick=()=>{
     search:()=>{$("#sq").focus();searchStatus();},
     net:loadNet,dev:loadDev,kernel:loadKernel,
     logs:()=>{if(!$("#logView").innerHTML)loadLogs(false);},
-    ai:()=>$("#aiIn").focus(),monitor:loadMonitor,
-    updates:loadUpdates,packages:()=>$("#pkgQ").focus(),
+    monitor:loadMonitor,
+    updates:loadUpdates,packages:()=>{$("#pkgQ").focus();loadInstalled();},
     settings:loadSettings,runtimes:loadRuntimes,term:openTerminal,
     db:loadDb,git:loadGit,api:loadApiClient,tools:loadSched}[b.dataset.tab]||(()=>{}))();
 });
@@ -205,8 +205,9 @@ const PAL_ITEMS=[
      ["logs","📜 Logs"],["kernel","🧬 Kernel"],["updates","📦 Updates"],
      ["users","👤 Users"],["storage","💾 Storage"],["files","📁 Files"],
      ["search","🔍 Search"],["clean","🧹 Clean up"],["net","🌐 Network"],
-     ["dev","🧰 Dev"],["tools","🔧 Tools"],["ai","✨ AI"]]
+     ["dev","🧰 Dev"],["tools","🔧 Tools"]]
     .map(([t,l])=>({label:l,hint:"tab",act:()=>goTab(t)})),
+  {label:"✨ Ask the assistant",hint:"action",act:()=>aiOpen()},
   {label:"🔁 Rebuild file index",hint:"action",act:()=>$("#reindex").click()},
   {label:"🔔 Send test notification",hint:"action",act:()=>$("#monTest").click()},
   {label:"⏸ Stop / start alerts",hint:"action",
@@ -368,9 +369,129 @@ async function pkgSearch(){
 $("#pkgGo").onclick=pkgSearch;
 $("#pkgQ").onkeydown=e=>{if(e.key==="Enter")pkgSearch();};
 
+/* ---- about & self-update ---- */
+let aboutInfo=null;
+const INSTALL_LABEL={git:"git checkout",deb:"Debian package",pip:"pip install",
+  unknown:"unknown"};
+async function loadAbout(){
+  try{
+    aboutInfo=await api("/api/about");
+    const a=aboutInfo;
+    $("#brandVer").textContent="v"+a.version;
+    $("#aboutVer").textContent=`— version ${a.version}`;
+    const kv=(k,v)=>v?`<div style="display:flex;gap:8px;padding:3px 0;
+      border-bottom:1px solid var(--grid)"><span class="muted"
+      style="width:130px;flex:none">${k}</span>
+      <span class="mono" style="font-size:11.5px;word-break:break-all">${esc(v)}</span></div>`:"";
+    $("#aboutBody").innerHTML=
+      kv("Version",a.version)+
+      kv("Installed as",INSTALL_LABEL[a.install]||a.install)+
+      kv("Location",a.root)+
+      kv("Python",a.python)+
+      kv("Service",a.service)+
+      kv("Listening on",`${a.host}:${a.port}`)+
+      kv("Config",a.config_dir)+
+      kv("Cache",a.cache_dir)+
+      kv("Updates from",a.repo);
+  }catch(e){$("#aboutBody").textContent="version info unavailable";}
+}
+$("#updCheck")&&($("#updCheck").onclick=async()=>{
+  $("#updStat").textContent="asking GitHub…";
+  $("#updApply").style.display="none";$("#updNotes").style.display="none";
+  try{
+    const u=await api("/api/perchupdate");
+    if(u.newer){
+      $("#updStat").innerHTML=`<b style="color:var(--s2)">${esc(u.latest)} is available</b>
+        (you have ${esc(u.current)})`;
+      $("#updApply").style.display="";
+      $("#updApply").textContent=`Update to ${u.latest}`;
+      $("#brandVer").textContent="v"+u.current+" ▲";
+      $("#brandVer").classList.add("new");
+      $("#brandVer").title=`${u.latest} is available — see Settings › About`;
+      if(u.notes){$("#updNotes").style.display="";
+        $("#updNotes").textContent=u.notes;}
+    }else{
+      $("#updStat").textContent=`you're on the latest release (${u.current})`;
+    }
+  }catch(e){$("#updStat").textContent="";toast(e.message,false);}
+});
+$("#updApply")&&($("#updApply").onclick=async()=>{
+  const how=aboutInfo&&aboutInfo.install;
+  if(!confirm(how==="git"
+    ?"Fast-forward this checkout to the latest release and then restart Perch?"
+    :"Download the latest release and install it?\nA password dialog appears."))return;
+  try{
+    await runJob(api("/api/perchupdate",{method:"POST",body:"{}"}));
+    $("#updStat").innerHTML='updated — <b>restart Perch</b> to run the new version';
+  }catch(e){toast(e.message,false);}
+});
+$("#perchRestart")&&($("#perchRestart").onclick=async()=>{
+  if(!confirm("Restart the Perch service?\nThis page will reconnect in a few seconds."))return;
+  try{await api("/api/perchrestart",{method:"POST",body:"{}"});
+    toast("restarting — reloading shortly");
+    setTimeout(()=>location.reload(),6000);}
+  catch(e){toast(e.message,false);}
+});
+
+/* ---- installed packages (every manager present) ---- */
+let instMgr="native",instData=null;
+async function loadInstalled(){
+  const tb=$("#instTable tbody");if(!tb)return;
+  tb.innerHTML='<tr><td colspan=4 class="muted" style="padding:12px">reading the package database…</td></tr>';
+  try{
+    instData=await api("/api/installed?mgr="+encodeURIComponent(instMgr)+
+      "&q="+encodeURIComponent(($("#instQ").value||"").trim())+
+      "&sort="+encodeURIComponent($("#instSort").value));
+    renderInstalled();
+  }catch(e){tb.innerHTML=`<tr><td colspan=4 class="muted" style="padding:12px">${esc(e.message)}</td></tr>`;}
+}
+function renderInstalled(){
+  const d=instData;if(!d)return;
+  const onlyUpg=$("#instUpg").checked;
+  const rows=d.packages.filter(p=>!onlyUpg||p.upgradable);
+  $("#instCount").textContent=`— ${d.total} installed`+
+    (d.matched!==d.total?` · ${d.matched} match`:"")+
+    (d.bytes?` · ${fmtB(d.bytes)}`:"");
+  const sfx={native:"native",snap:"snap",flatpak:"flatpak"}[d.mgr];
+  $("#instTable tbody").innerHTML=rows.map(p=>`
+    <tr><td><b>${esc(p.name)}</b>
+      ${p.upgradable?'<span class="pill" style="border-color:var(--s2);color:var(--s2);font-size:10.5px">update</span>':""}
+      ${p.summary?`<div class="muted" style="font-size:11px;max-width:520px;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.summary)}</div>`:""}</td>
+    <td class="mono" style="font-size:11.5px">${esc(p.version)}</td>
+    <td class="num">${p.size?fmtB(p.size):"—"}</td>
+    <td class="num" style="white-space:nowrap">
+      <button class="btn small" data-pkgup="${esc(p.name)}" data-sfx="${sfx}">Update</button>
+      <button class="btn small danger" data-pkgrm="${esc(p.name)}" data-sfx="${sfx}">Remove</button>
+    </td></tr>`).join("")
+    ||`<tr><td colspan=4 class="muted" style="padding:12px">no packages match</td></tr>`;
+  if(d.truncated)$("#instCount").textContent+=" · showing the first "+d.packages.length;
+  $("#instTable").querySelectorAll("[data-pkgup]").forEach(b=>b.onclick=()=>
+    runJob(api("/api/pkginstall",{method:"POST",body:JSON.stringify(
+      {mgr:b.dataset.sfx+"-update",name:b.dataset.pkgup})})));
+  $("#instTable").querySelectorAll("[data-pkgrm]").forEach(b=>b.onclick=()=>{
+    if(!confirm(`Remove ${b.dataset.pkgrm}?\n\nAnything depending on it may be `+
+      `removed too — the package manager lists what it will do in the job output.`))return;
+    runJob(api("/api/pkginstall",{method:"POST",body:JSON.stringify(
+      {mgr:b.dataset.sfx+"-remove",name:b.dataset.pkgrm})}));});
+}
+$("#instMgr")&&$("#instMgr").querySelectorAll("[data-mgr]").forEach(b=>b.onclick=()=>{
+  if(b.dataset.mgr===instMgr)return;
+  $("#instMgr").querySelectorAll("button").forEach(x=>x.classList.remove("on"));
+  b.classList.add("on");instMgr=b.dataset.mgr;
+  // a filter typed for one manager almost never matches the next one, and an
+  // empty table reads as "nothing installed" rather than "nothing matched"
+  $("#instQ").value="";$("#instUpg").checked=false;
+  loadInstalled();});
+$("#instQ")&&($("#instQ").oninput=()=>{clearTimeout(window._instq);
+  window._instq=setTimeout(loadInstalled,350);});
+$("#instSort")&&($("#instSort").onchange=loadInstalled);
+$("#instUpg")&&($("#instUpg").onchange=renderInstalled);
+$("#instReload")&&($("#instReload").onclick=loadInstalled);
+
 /* ---- settings ---- */
 async function loadSettings(){
-  loadLLM();
+  loadLLM();loadAbout();
   try{
     const s=await api("/api/settings");
     const slider=(id,label,val,min,max,unit,key)=>`
@@ -769,6 +890,37 @@ const HOME_DEFAULT=["cpu","mem","net","gpu","core","disk","temp","battery",
 const HOME_SIZES=["s","m","l","full"];
 const HOME_SIZE_LABEL={s:"S",m:"M",l:"L",full:"▭"};
 
+/* The server holds the authoritative layout (~/.config/perch/home.json) so it
+   follows you to another browser; localStorage stays as an offline cache and
+   the fallback when the server has never been written to. */
+let homeSynced=false;
+async function homeLoadRemote(){
+  try{
+    const r=await api("/api/homelayout");
+    if(r.layout&&(r.layout.order||[]).length){
+      localStorage.perchHome=JSON.stringify(r.layout);
+      applyHome();
+    }else{
+      // first run on this machine: seed the server from whatever this browser has
+      const local=localStorage.perchHome;
+      if(local)homeSaveRemote(JSON.parse(local));
+    }
+  }catch(e){/* offline or older server — the localStorage copy still works */}
+  homeSynced=true;
+}
+let homeSaveTimer=null;
+function homeSaveRemote(layout){
+  clearTimeout(homeSaveTimer);
+  homeSaveTimer=setTimeout(()=>{
+    api("/api/homelayout",{method:"POST",body:JSON.stringify({layout})})
+      .catch(()=>{});
+  },600);
+}
+/* single place that persists a layout: browser cache + server */
+function homeWrite(st){
+  localStorage.perchHome=JSON.stringify(st);
+  homeSaveRemote(st);
+}
 function homeState(){
   let st=null;
   try{st=JSON.parse(localStorage.perchHome||"null");}catch(e){}
@@ -793,7 +945,7 @@ function saveHome(){
   st.hidden=Object.keys(HOME_WIDGETS).filter(id=>!shown.includes(id));
   [...grid.children].forEach(el=>{
     if(el.dataset.w&&el.dataset.size)st.sizes[el.dataset.w]=el.dataset.size;});
-  localStorage.perchHome=JSON.stringify(st);
+  homeWrite(st);
 }
 function homeEl(id){
   const grid=$("#ovGrid");
@@ -895,7 +1047,7 @@ function ovDecorate(){
         const st=homeState();
         st.hidden=st.hidden.filter(x=>x!==el.dataset.w).concat(el.dataset.w);
         st.order=st.order.filter(x=>x!==el.dataset.w);
-        localStorage.perchHome=JSON.stringify(st);
+        homeWrite(st);
         applyHome();toast(`${HOME_WIDGETS[el.dataset.w].title} removed`);};
       el.appendChild(ctl);
     }
@@ -909,14 +1061,31 @@ $("#ovCustomize")&&($("#ovCustomize").onclick=()=>{
   $("#ovCustomize").textContent=ovEditing?"✓ Done":"✎ Customize home";
   $("#ovReset").style.display=ovEditing?"":"none";
   $("#ovAdd").style.display=ovEditing?"":"none";
+  $("#ovExport").style.display=ovEditing?"":"none";
+  $("#ovImport").style.display=ovEditing?"":"none";
   $("#ovEditHint").style.display=ovEditing?"":"none";
   ovDecorate();
   if(!ovEditing){saveHome();toast("home layout saved");}
 });
-$("#ovReset")&&($("#ovReset").onclick=()=>{
-  if(!confirm("Reset the home screen to its default layout?"))return;
+$("#ovReset")&&($("#ovReset").onclick=async()=>{
+  if(!confirm("Reset the home screen to its default layout?\nThis clears the saved layout on this machine too."))return;
   localStorage.removeItem("perchHome");localStorage.removeItem("perchTiles");
+  try{await api("/api/homelayout",{method:"POST",body:JSON.stringify({layout:null})});}
+  catch(e){}
   location.reload();});
+/* ---- layout export / import ---- */
+$("#ovExport")&&($("#ovExport").onclick=()=>{
+  copyText(JSON.stringify(homeState(),null,1));
+  toast("layout JSON copied to the clipboard");});
+$("#ovImport")&&($("#ovImport").onclick=()=>{
+  const raw=prompt("Paste a layout JSON (from Export on another machine):");
+  if(!raw)return;
+  try{
+    const st=JSON.parse(raw);
+    if(!st||!Array.isArray(st.order))throw new Error("that isn't a layout");
+    homeWrite({order:st.order,hidden:st.hidden||[],sizes:st.sizes||{}});
+    applyHome();toast("layout imported");
+  }catch(e){toast("import failed: "+e.message,false);}});
 $("#ovGrid")&&$("#ovGrid").addEventListener("dragstart",e=>{
   if(!ovEditing)return;dragEl=e.target.closest("[data-w]");
   if(dragEl)dragEl.classList.add("dragging");});
@@ -952,7 +1121,7 @@ function galRender(){
     const id=el.dataset.add,s=homeState();
     s.hidden=s.hidden.filter(x=>x!==id);
     s.order=s.order.filter(x=>x!==id).concat(id);
-    localStorage.perchHome=JSON.stringify(s);
+    homeWrite(s);
     applyHome();galRender();
     toast(`${HOME_WIDGETS[id].title} added to the home screen`);
   });
@@ -1055,6 +1224,7 @@ async function loadLLM(){
     $("#llmKeyState").textContent=c.has_key?"✓ key saved":"no key set";
     $("#llmKey").value="";
     llmSyncFields();
+    aiSetProvider(c);
   }catch(e){}
 }
 $("#llmProvider")&&($("#llmProvider").onchange=()=>{
@@ -1146,6 +1316,7 @@ document.querySelectorAll("[data-dest]").forEach(b=>b.onclick=()=>{
 });
 
 applyHome();
+homeLoadRemote();
 initAccentUI();
 if(bgMode!=="none")startBg(bgMode);
 /* ---- overview: critical logs needing attention ---- */
@@ -1230,7 +1401,7 @@ $("#bkRun")&&($("#bkRun").onclick=async()=>{
   catch(e){toast(e.message,false);}
 });
 async function loadStorage(){
-  loadBackup();
+  loadBackup();loadDiskHealth();
   const ds=await api("/api/disks");
   const big=ds.filter(d=>d.used>=500*2**20||d.mount==="/");
   const small=ds.filter(d=>!big.includes(d));
@@ -1716,8 +1887,7 @@ applyReduceFx();
 let CAPS=null;
 async function loadCaps(){
   try{CAPS=await api("/api/caps");applyCaps();
-    if(!CAPS.ai){const b=document.querySelector('nav button[data-tab="ai"]');
-      if(b)b.style.display="none";}
+    if(!CAPS.ai){const b=$("#aiFab");if(b)b.style.display="none";aiClose();}
   }catch(e){}
 }
 function applyCaps(){
@@ -1735,6 +1905,7 @@ function applyCaps(){
     $("#codeHere").textContent="⌨ Editor here";
 }
 loadCaps();
+loadAbout();
 
 /* ---- in-dashboard preview (no desktop apps needed) ---- */
 async function showPreview(path,kind){
@@ -1891,6 +2062,7 @@ $("#ovSqFull")&&($("#ovSqFull").onclick=ovSqFull);
 /* ---- network ---- */
 let netData=null;
 async function loadNet(){
+  loadFirewall();
   try{
     netData=await api("/api/net");
     $("#estCount").textContent=`· ${netData.established} established connections`;
@@ -1901,6 +2073,81 @@ async function loadNet(){
       ||'<span class="muted">no interfaces up</span>';
   }catch(e){toast(e.message,false);}
 }
+/* ---- firewall (status unprivileged, rule dump via pkexec) ---- */
+async function loadFirewall(){
+  const body=$("#fwBody");if(!body)return;
+  try{
+    const f=await api("/api/firewall");
+    if(!f.any){
+      $("#fwState").textContent="— none detected";
+      body.innerHTML='<span class="muted">no firewall tool installed '+
+        '(looked for ufw, firewalld, nftables)</span>';
+      $("#fwRules").style.display="none";return;}
+    $("#fwRules").style.display=f.can_dump?"":"none";
+    const on=f.ufw_enabled;
+    $("#fwState").innerHTML=on===true?'— <b style="color:var(--goodtext)">on</b>'
+      :on===false?'— <b style="color:var(--serious)">off</b>':"";
+    body.innerHTML=Object.entries(f.tools).map(([name,t])=>`
+      <span class="pill" style="margin:3px 6px 3px 0">
+        ${t.service==="active"?"🟢":"⚪"} <b>${esc(name)}</b>
+        service ${esc(t.service)}${t.enabled===false?" · not enabled":
+          t.enabled===true?" · enabled":""}</span>`).join("")+
+      (on===false?'<div style="margin-top:6px;color:var(--serious)">⚠ ufw is '+
+        'installed but not enabled — inbound ports are not being filtered.</div>':"");
+  }catch(e){body.innerHTML='<span class="muted">firewall status unavailable</span>';}
+}
+$("#fwRules")&&($("#fwRules").onclick=()=>{
+  if(!confirm("Show the live firewall rules?\nThis needs admin rights — a password dialog appears."))return;
+  runJob(api("/api/firewallrules",{method:"POST",body:"{}"}));});
+
+/* ---- drive health ---- */
+async function loadDiskHealth(){
+  const body=$("#dhBody");if(!body)return;
+  try{
+    const d=await api("/api/diskhealth");
+    if(!d.devices.length){body.innerHTML='<span class="muted">no physical devices found</span>';return;}
+    body.innerHTML='<table><thead><tr><th>Device</th><th>Model</th>'+
+      '<th class="num">Size</th><th>Type</th><th></th></tr></thead><tbody>'+
+      d.devices.map(x=>`<tr>
+        <td class="mono"><b>/dev/${esc(x.name)}</b></td>
+        <td class="muted">${esc([x.vendor,x.model].filter(Boolean).join(" ")||"—")}</td>
+        <td class="num">${fmtB(x.size)}</td>
+        <td>${x.rotational?"spinning disk":"SSD / flash"}${x.readonly?" · read-only":""}</td>
+        <td class="num">${d.smartctl?`<button class="btn small" data-smart="${esc(x.name)}">SMART check</button>`:""}</td>
+      </tr>`).join("")+'</tbody></table>'+
+      (d.smartctl?'<div class="muted" style="font-size:11.5px;margin-top:6px">'+
+        'SMART needs admin rights — a password dialog appears and the report '+
+        'streams into the job box.</div>'
+       :'<div class="muted" style="font-size:11.5px;margin-top:6px">Install '+
+        '<code>smartmontools</code> to read drive health (wear, reallocated '+
+        'sectors, hours powered on).</div>');
+    body.querySelectorAll("[data-smart]").forEach(b=>b.onclick=()=>
+      runJob(api("/api/smart",{method:"POST",
+        body:JSON.stringify({device:b.dataset.smart})})));
+  }catch(e){body.innerHTML='<span class="muted">drive list unavailable</span>';}
+}
+
+/* ---- docker disk usage ---- */
+async function loadDockerDisk(){
+  const box=$("#dockerDisk");if(!box)return;
+  try{
+    const d=await api("/api/dockerdisk");
+    box.innerHTML='<h2 style="margin:10px 0 4px">Disk usage</h2>'+
+      '<table><thead><tr><th>Type</th><th class="num">Items</th>'+
+      '<th class="num">Active</th><th class="num">Size</th>'+
+      '<th class="num">Reclaimable</th></tr></thead><tbody>'+
+      d.usage.map(u=>`<tr><td><b>${esc(u.type)}</b></td>
+        <td class="num">${esc(String(u.total))}</td>
+        <td class="num muted">${esc(String(u.active))}</td>
+        <td class="num">${esc(u.size)}</td>
+        <td class="num" style="color:var(--s2)">${esc(u.reclaimable)}</td></tr>`).join("")+
+      '</tbody></table>'+
+      (d.volumes.length?'<div class="muted" style="font-size:11.5px;margin-top:6px">volumes: '+
+        d.volumes.slice(0,12).map(v=>`<span class="pill" style="margin:2px 4px 2px 0">${esc(v.name)}</span>`).join("")+
+        (d.volumes.length>12?` +${d.volumes.length-12} more`:"")+'</div>':"");
+  }catch(e){box.innerHTML="";}
+}
+
 function renderPorts(){
   if(!netData)return;
   const q=($("#portQ").value||"").trim().toLowerCase();
@@ -1955,7 +2202,7 @@ $("#portPub")&&($("#portPub").onchange=renderPorts);
 /* ---- dev ---- */
 async function loadDev(){
   loadDocker();loadServices();loadTools();loadDockerStats();loadCompose();
-  loadContainers();
+  loadContainers();loadDockerDisk();
 }
 /* ---- other container environments: podman / nerdctl / LXD / kubernetes ---- */
 const CTR_STATE_DOT=s=>s==="running"?"🟢":s==="paused"?"🟡":
@@ -2114,11 +2361,17 @@ async function loadServices(){
     $("#svct tbody").innerHTML=s.user.map(u=>`
       <tr><td class="mono" style="font-size:12px">${esc(u.name)}</td>
       <td>${u.active==="active"?"🟢":u.active==="failed"?"🔴":"⚪"} ${esc(u.sub)}</td>
+      <td>${u.enabled==="enabled"?'<span class="pill">starts at login</span>'
+        :u.enabled==="disabled"?'<span class="muted">manual</span>':""}</td>
       <td class="muted">${esc(u.desc)}</td>
       <td class="num" style="white-space:nowrap">
         <button class="btn small" data-svc="restart" data-name="${esc(u.name)}">Restart</button>
         ${u.active==="active"?`<button class="btn small danger" data-svc="stop" data-name="${esc(u.name)}">Stop</button>`
           :`<button class="btn small" data-svc="start" data-name="${esc(u.name)}">Start</button>`}
+        ${u.enabled==="enabled"
+          ?`<button class="btn small" data-svc="disable" data-name="${esc(u.name)}">Disable</button>`
+          :u.enabled==="disabled"
+            ?`<button class="btn small" data-svc="enable" data-name="${esc(u.name)}">Enable</button>`:""}
       </td></tr>`).join("");
     $("#svcFailed").innerHTML=s.failed_system.length?
       `<b style="color:var(--crit)">⚠ failed system services:</b> `+
@@ -2156,6 +2409,7 @@ async function loadMonitor(){
   try{
     const m=await api("/api/monitor");
     if(m.ctl)renderAlertCtl(m.ctl);
+    crRules=m.custom||[];crKinds=m.custom_kinds||{};renderCustom();
     $("#monRules tbody").innerHTML=Object.entries(m.cfg).map(([k,r])=>`
       <tr><td style="width:30px"><input type="checkbox" class="mon-on" data-k="${k}" ${r.on?"checked":""}></td>
       <td>${esc(MON_LABELS[k]||k)}</td>
@@ -2170,6 +2424,54 @@ async function loadMonitor(){
     loadChannels();loadLogwatch();
   }catch(e){toast(e.message,false);}
 }
+/* ---- custom alert rules (unit / port / process / folder size) ---- */
+let crRules=[],crKinds={};
+function renderCustom(){
+  const kinds=Object.keys(crKinds).length?crKinds:{unit:"unit",port:"port",
+    process:"process",path:"folder size"};
+  const ph={unit:"name.service",port:"8080",process:"postgres",
+    path:"~/Downloads"};
+  $("#crRules").innerHTML=crRules.map((r,i)=>`
+    <div class="row" style="margin-bottom:6px">
+      <input type="text" class="crName" data-i="${i}" value="${esc(r.name||"")}"
+        placeholder="rule name" style="width:150px">
+      <select class="btn crKind" data-i="${i}">${Object.entries(kinds).map(([k,label])=>
+        `<option value="${k}" ${k===r.kind?"selected":""}>${esc(label)}</option>`).join("")}</select>
+      <input type="text" class="crTarget mono" data-i="${i}" value="${esc(r.target||"")}"
+        placeholder="${ph[r.kind]||""}" style="flex:1;min-width:150px">
+      <input type="text" class="crValue" data-i="${i}" value="${r.value||0}"
+        style="width:70px;min-width:70px" title="threshold (GB, folder rules only)"
+        ${r.kind==="path"?"":"disabled"}>
+      <label class="pill"><input type="checkbox" class="crEn" data-i="${i}"
+        ${r.enabled!==false?"checked":""}> on</label>
+      <span class="hint" data-crdel="${i}" style="color:var(--crit);cursor:pointer">✕</span>
+    </div>`).join("")||'<span class="muted" style="font-size:12px">no custom rules yet</span>';
+  $("#crRules").querySelectorAll("[data-crdel]").forEach(el=>el.onclick=()=>{
+    collectCustom();crRules.splice(+el.dataset.crdel,1);renderCustom();});
+  // the threshold box only means anything for folder-size rules
+  $("#crRules").querySelectorAll(".crKind").forEach(s=>s.onchange=()=>{
+    collectCustom();renderCustom();});
+}
+function collectCustom(){
+  const g=c=>[...document.querySelectorAll(c)];
+  crRules=g(".crName").map((n,i)=>({
+    name:n.value.trim(),
+    kind:g(".crKind")[i].value,
+    target:g(".crTarget")[i].value.trim(),
+    value:parseFloat(g(".crValue")[i].value)||0,
+    enabled:g(".crEn")[i].checked}));
+}
+$("#crAdd")&&($("#crAdd").onclick=()=>{collectCustom();
+  crRules.push({name:"",kind:"unit",target:"",value:0,enabled:true});renderCustom();});
+$("#crSave")&&($("#crSave").onclick=async()=>{
+  collectCustom();
+  try{const r=await api("/api/customrules",{method:"POST",
+    body:JSON.stringify({rules:crRules.filter(x=>x.target)})});
+    crRules=r.rules;renderCustom();
+    $("#crStat").textContent=`saved ${r.rules.length} rule(s) ✓`;
+    toast("custom rules saved");}
+  catch(e){$("#crStat").textContent="";toast(e.message,false);}});
+
 /* ---- alert channels ---- */
 let ntCfg={desktop:true,channels:[]};
 async function loadChannels(){
@@ -2360,10 +2662,35 @@ document.querySelectorAll("[data-j]").forEach(b=>b.onclick=async()=>{
     catch(e){$("#jStat").textContent="⚠ "+e.message;toast(e.message,false);}
     return;
   }
+  // unescaping runs on the raw text: the input is a string literal, which is
+  // only valid JSON on its own when it still has its surrounding quotes
+  if(act==="unstr"){
+    const raw=$("#jIn").value.trim();
+    if(!raw){$("#jStat").textContent="⚠ nothing to unescape";return;}
+    let inner;
+    try{
+      inner=(raw.startsWith('"')&&raw.endsWith('"'))
+        ?JSON.parse(raw)                 // "{\"a\":1}"
+        :JSON.parse('"'+raw+'"');        // {\"a\":1}  — quotes omitted
+    }catch(e){
+      $("#jStat").textContent="⚠ not an escaped string: "+e.message;
+      toast("not an escaped JSON string",false);return;
+    }
+    try{
+      $("#jOut").value=JSON.stringify(JSON.parse(inner),null,2);
+      $("#jStat").textContent="unescaped and formatted ✓";
+    }catch(e){                            // valid escaping, but not JSON inside
+      $("#jOut").value=inner;
+      $("#jStat").textContent="unescaped ✓ (contents aren't JSON)";
+    }
+    return;
+  }
   const o=jParse();if(o===undefined)return;
   if(act==="fmt")$("#jOut").value=JSON.stringify(o,null,2);
   if(act==="min")$("#jOut").value=JSON.stringify(o);
   if(act==="sort")$("#jOut").value=JSON.stringify(jSort(o),null,2);
+  // minified first, so the embedded copy carries no formatting whitespace
+  if(act==="str")$("#jOut").value=JSON.stringify(JSON.stringify(o));
   if(act==="keys"){const ks=[...jKeys(o)].join("\n");
     $("#jOut").value=ks;copyText(ks);
     $("#jStat").textContent=ks.split("\n").length+" key paths copied";}
@@ -2585,7 +2912,47 @@ $("#logFollow").onchange=()=>{
   }else stopFollow();
 };
 
-/* ---- ai ---- */
+/* ---- ai: floating dock (bottom-right), not a tab ---- */
+const AI_PROVIDER_LABEL={"claude-cli":"local Claude Code",anthropic:"Anthropic API",
+  openai:"OpenAI-compatible",ollama:"Ollama (local)"};
+function aiSetProvider(c){
+  const el=$("#aiProv");if(!el||!c)return;
+  el.textContent=(AI_PROVIDER_LABEL[c.provider]||c.provider||"")+
+    (c.model?` · ${c.model}`:"");
+}
+let aiProvLoaded=false;
+function aiOpen(){
+  if(CAPS&&CAPS.ai===false){toast("no AI provider configured — set one in Settings",false);return;}
+  // the provider label is only known from the server; fetch it once, lazily
+  if(!aiProvLoaded){aiProvLoaded=true;
+    api("/api/llm").then(aiSetProvider).catch(()=>{});}
+  $("#aiDock").classList.add("open");
+  $("#aiFab").classList.add("on");
+  $("#aiFab").textContent="✕";
+  $("#aiFab").title="Close the assistant (Esc)";
+  setTimeout(()=>$("#aiIn").focus(),60);
+  const c=$("#aiChat");c.scrollTop=c.scrollHeight;
+}
+function aiClose(){
+  $("#aiDock").classList.remove("open");
+  $("#aiFab").classList.remove("on");
+  $("#aiFab").textContent="✨";
+  $("#aiFab").title="Ask the assistant (Ctrl+I)";
+}
+function aiToggle(){
+  $("#aiDock").classList.contains("open")?aiClose():aiOpen();
+}
+$("#aiFab")&&($("#aiFab").onclick=aiToggle);
+$("#aiClose")&&($("#aiClose").onclick=aiClose);
+document.addEventListener("keydown",e=>{
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="i"&&!e.shiftKey){
+    e.preventDefault();aiToggle();return;}
+  if(e.key==="Escape"&&$("#aiDock").classList.contains("open")
+     &&!$("#pal").classList.contains("open"))aiClose();
+});
+// #ai still works as a deep link, it just opens the dock instead of a tab
+if(location.hash.replace("#","")==="ai")setTimeout(aiOpen,300);
+
 function aiBubble(cls,text){
   const div=document.createElement("div");
   div.className="bubble "+cls;div.textContent=text;
@@ -3255,6 +3622,57 @@ async function loadMaint(){
         loadMaint();}catch(e){toast(e.message,false);}};
   }catch(e){}
 }
+/* ---- cleanup lenses: duplicates and stale big files ---- */
+$("#dupGo")&&($("#dupGo").onclick=async()=>{
+  const btn=$("#dupGo");btn.disabled=true;
+  $("#dupStat").textContent="scanning… up to 20 s";
+  $("#dupBody").innerHTML="";
+  try{
+    const r=await api("/api/dupes?path="+encodeURIComponent($("#dupPath").value.trim())+
+      "&min="+encodeURIComponent($("#dupMin").value.trim()||"1"));
+    $("#dupStat").textContent=`${r.groups.length} group(s) · ${fmtB(r.wasted)} reclaimable`+
+      (r.truncated?" · stopped early, narrow the folder for a full picture":"");
+    $("#dupBody").innerHTML=r.groups.length?'<table><thead><tr><th>Copies</th>'+
+      '<th class="num">Each</th><th class="num">Wasted</th><th>Files</th></tr></thead><tbody>'+
+      r.groups.map(g=>`<tr>
+        <td><b>${g.count}</b></td>
+        <td class="num">${fmtB(g.size)}</td>
+        <td class="num" style="color:var(--s2)">${fmtB(g.wasted)}</td>
+        <td>${g.paths.map(p=>`<div class="mono" style="font-size:11px;
+          overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          <span class="name" data-p="${esc(p)}" data-dir="false">${esc(p)}</span></div>`).join("")}</td>
+      </tr>`).join("")+'</tbody></table>'
+      :`<span class="muted" style="font-size:12.5px">no duplicates found in ${esc(r.root)}</span>`;
+    hookRowActions($("#dupBody"));
+  }catch(e){$("#dupStat").textContent="";toast(e.message,false);}
+  btn.disabled=false;
+});
+$("#oldGo")&&($("#oldGo").onclick=async()=>{
+  const btn=$("#oldGo");btn.disabled=true;
+  $("#oldStat").textContent="scanning… up to 20 s";
+  $("#oldBody").innerHTML="";
+  try{
+    const r=await api("/api/oldfiles?path="+encodeURIComponent($("#oldPath").value.trim())+
+      "&min="+encodeURIComponent($("#oldMin").value.trim()||"100")+
+      "&days="+encodeURIComponent($("#oldDays").value.trim()||"365"));
+    $("#oldStat").textContent=`${r.files.length} file(s) · ${fmtB(r.total)} total`+
+      (r.truncated?" · stopped early":"");
+    $("#oldBody").innerHTML=r.files.length?'<table><thead><tr><th>File</th>'+
+      '<th class="num">Size</th><th class="num">Last touched</th><th></th></tr></thead><tbody>'+
+      r.files.slice(0,60).map(f=>`<tr>
+        <td class="mono" style="font-size:11.5px;max-width:520px;overflow:hidden;
+          text-overflow:ellipsis;white-space:nowrap">
+          <span class="name" data-p="${esc(f.path)}" data-dir="false">${esc(f.path)}</span></td>
+        <td class="num">${fmtB(f.size)}</td>
+        <td class="num muted">${ago(Math.max(f.atime,f.mtime))}</td>
+        <td class="num"><button class="btn small" data-goto="${esc(f.path.slice(0,f.path.lastIndexOf("/"))||"/")}">Browse</button></td>
+      </tr>`).join("")+'</tbody></table>'
+      :`<span class="muted" style="font-size:12.5px">nothing that big and that old in ${esc(r.root)}</span>`;
+    hookRowActions($("#oldBody"));
+  }catch(e){$("#oldStat").textContent="";toast(e.message,false);}
+  btn.disabled=false;
+});
+
 async function loadClean(){
   loadMaint();
   $("#cleanTargets").textContent="scanning sizes…";

@@ -67,6 +67,10 @@ step, no cloud.
   15 min / 1 h / 4 h / 24 h (it resumes on its own), enable or disable every
   rule at once, and clear the alert history. While alerting is off the
   sidebar shows 🔕 and history keeps recording — only the alerts stop.
+  Beyond the built-in thresholds you can add **custom rules** for the specific
+  things this machine should be doing: a systemd unit that stopped running, a
+  port nothing is listening on, a process that vanished, or a folder that grew
+  past a size limit.
 
   ![Monitor — the alerting master switch with snooze buttons, above the threshold rules](docs/monitor-alerts.png)
 
@@ -78,9 +82,13 @@ step, no cloud.
 
 ### Manage storage & files
 - **Storage** — disk usage plus a folder-size analyzer to find what's eating
-  space, and a **backup helper** (rsync folders to another drive, on demand or
-  a daily/weekly schedule); a **Clean up** tab for caches and trash with an
-  optional weekly auto tidy-up.
+  space, **drive health** (model, size, SSD vs spinning, and a SMART check per
+  device), and a **backup helper** (rsync folders to another drive, on demand
+  or a daily/weekly schedule).
+- **Clean up** — caches and trash with an optional weekly auto tidy-up, plus
+  two lenses for the space you forgot about: a **duplicate finder** and **big
+  files you haven't opened in a long time**. Both scan a folder you choose
+  under a time budget, and neither deletes anything for you.
 - **Files** — a full file browser with previews (images, PDF, video, audio,
   Word, Excel), open-with, bulk trash, set-as-wallpaper, and a side drawer
   containing a text editor (with vim mode) and a sketch canvas.
@@ -97,12 +105,16 @@ step, no cloud.
 - **Network** — listening ports showing which process (and command line) holds
   each one, filterable by port/process/command, with **Stop** (SIGTERM) and
   **Force** (SIGKILL) on the exact PID shown; public IP and a speed test.
-  Perch's own port is marked so you can't shut the dashboard on yourself.
+  Perch's own port is marked so you can't shut the dashboard on yourself, and a
+  **firewall panel** sits alongside — service status without privileges, and the
+  live rule set on demand through `pkexec`.
 
   ![Network — listening ports with Stop and Force buttons, and Perch's own port marked](docs/network-ports.png)
 
 - **Dev** — Docker containers with live stats, logs, shell, compose control
-  and prune; systemd user services; toolchain overview. Perch also **detects
+  and prune, plus **disk usage** showing what images, containers, volumes and
+  build cache actually cost and how much a prune would reclaim; systemd user
+  services with enable/disable at login; toolchain overview. Perch also **detects
   any other container environment** on the machine — Podman, nerdctl, LXD/Incus
   and Kubernetes — and lists their containers (start/stop/restart/remove/shell/
   logs) and pods (namespace, ready count, restarts, node, logs). Nothing is
@@ -118,13 +130,18 @@ step, no cloud.
 - **Runtimes** — detect installed language runtimes, switch defaults (rustup,
   `update-alternatives`), and manage **SSH keys** (list, fingerprint, copy
   public key, generate ed25519).
-- **Tools** — JSON format/sort/extract, YAML ↔ JSON, base64/URL/epoch/UUID/
+- **Tools** — JSON format/sort/extract, **JSON ↔ escaped string** (for
+  embedding a document in another one, and for reading it back out of a log
+  line), YAML ↔ JSON, base64/URL/epoch/UUID/
   JWT/SHA-256 converters, regex tester, text diff, cron explainer, color and
   case converters, secret generator, website screenshot preview, and a
   **scheduled-tasks manager** (edit crontab, enable/disable systemd timers).
 
 ### AI assistant
-- Chat about your machine with a live system snapshot injected, and generate
+- A **floating button in the bottom-right corner** opens the assistant as a
+  docked chat panel over whatever you're looking at — so you can ask about the
+  tab you're on without navigating away from it (**Ctrl+I**, or Esc to close).
+  Chat about your machine with a live system snapshot injected, and generate
   a one-click **health report**. The provider is pluggable: the local Claude
   CLI (default, no API key), the Anthropic API, any OpenAI-compatible
   endpoint, or a local Ollama model — configured in Settings.
@@ -143,10 +160,20 @@ step, no cloud.
   blur, the gradient backdrop, glows and animations for low-powered machines.
 - **Packages** — search, install, remove and upgrade across your native
   package manager (**apt, dnf, pacman or zypper**, auto-detected) plus **snap**
-  and **flatpak** when present. A system password dialog (`pkexec`) appears for
-  privileged actions.
+  and **flatpak** when present. Also lists **everything already installed**
+  from every manager, with version, size and description, filterable and
+  sortable, an *only updatable* toggle, and per-package **Update** and
+  **Remove**. A system password dialog (`pkexec`) appears for privileged
+  actions and the live output streams into the job box.
+- **About & self-update** — Settings shows the running version (also next to
+  the name in the sidebar), how this copy was installed, where it lives and
+  which directories it uses. **Check for updates** asks GitHub for the newest
+  published release and shows its notes; **Update now** fast-forwards a git
+  checkout or installs the release `.deb`, depending on how you installed it,
+  and refuses rather than risk a checkout with uncommitted work.
 
-Everything is reachable through a **Ctrl+K command palette**, and the grouped
+Everything is reachable through a **Ctrl+K command palette**, the assistant is
+one click away in the bottom-right corner from any tab, and the grouped
 sidebar scrolls on its own (independently of the page) with live CPU/MEM/DISK
 mini-bars pinned at the bottom. Integrations that aren't installed
 on your machine hide themselves automatically — and a **Simple mode** toggle
@@ -230,10 +257,10 @@ needs that token — bookmark the URL.
 
 State (search index, alert history, screenshots) lives under
 `~/.cache/perch`; alert and app config under `~/.config/perch` — including
-`alertctl.json`, which holds the alerting on/off/snooze state so it survives a
-restart. Your home-screen layout (widget order, sizes and which ones are
-shown) is per-browser and kept in `localStorage`, not on the server; *reset
-layout* on the Overview tab clears it.
+`alertctl.json` (alerting on/off/snooze), `customrules.json` (your own alert
+rules) and `home.json` (the home-screen layout). Because the layout lives on
+the server, it follows you to a different browser or machine; the browser keeps
+a copy as an offline cache, and *reset layout* on the Overview tab clears both.
 
 ## Security
 
@@ -251,11 +278,17 @@ Review the code before exposing it beyond localhost.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Backend is one organised module;
 frontend is plain HTML/CSS/JS with no build step. `make help` lists tasks.
-Run the tests with:
 
 ```bash
-python3 -m unittest discover -s tests -v
+make test            # unit + HTTP smoke tests (stdlib unittest only)
+make test-frontend   # drives the real app in headless Chrome
 ```
+
+The frontend suite boots a throwaway Perch on a temp `HOME`, opens it in
+headless Chrome over the DevTools Protocol, and asserts the app actually
+works — live tiles, the widget gallery, layout persistence across a reload,
+the alerting switch, custom rules, port filtering, and every tab opening
+without a console error. It skips itself if no Chrome is on `PATH`.
 
 ## Releasing
 

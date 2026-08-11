@@ -5,6 +5,7 @@ The module is imported with HOME pointed at a temp dir so token/config/cache
 files never touch the real home directory.
 """
 import http.client
+import io
 import json
 import os
 import stat
@@ -473,6 +474,339 @@ class KillPortTargeting(unittest.TestCase):
         self._listen()
         with self.assertRaises(ValueError):
             S.kill_port(1234)
+
+
+class CustomAlertRules(unittest.TestCase):
+    def setUp(self):
+        try:
+            os.remove(S.CUSTOM_FILE)
+        except OSError:
+            pass
+
+    tearDown = setUp
+
+    def test_rejects_bad_rules(self):
+        for bad, why in (
+                ({"kind": "nope", "target": "x"}, "unknown type"),
+                ({"kind": "unit", "target": "not a unit"}, "bad unit name"),
+                ({"kind": "unit", "target": ""}, "empty target"),
+                ({"kind": "port", "target": "99999"}, "port out of range"),
+                ({"kind": "port", "target": "http"}, "non-numeric port"),
+                ({"kind": "path", "target": "/tmp", "value": "abc"}, "bad number")):
+            with self.assertRaises(ValueError, msg=why):
+                S._custom_clean(bad)
+
+    def test_normalises_a_good_rule(self):
+        r = S._custom_clean({"kind": "port", "target": " 8080 ", "name": " api "})
+        self.assertEqual(r, {"name": "api", "kind": "port", "target": "8080",
+                             "value": 0.0, "enabled": True})
+
+    def test_name_defaults_to_the_target(self):
+        self.assertEqual(S._custom_clean({"kind": "port", "target": "22"})["name"],
+                         "port:22")
+
+    def test_save_round_trip_and_cap(self):
+        S.custom_save([{"kind": "port", "target": "8080", "name": "api"}])
+        self.assertEqual(len(S.custom_rules()), 1)
+        with self.assertRaises(ValueError):
+            S.custom_save([{"kind": "port", "target": "80"}] * (S.CUSTOM_MAX + 1))
+
+    def test_corrupt_file_yields_no_rules(self):
+        os.makedirs(S.CFG_DIR, exist_ok=True)
+        S.atomic_write(S.CUSTOM_FILE, "{not json")
+        self.assertEqual(S.custom_rules(), [])
+
+    def test_port_rule_fires_only_when_nothing_listens(self):
+        orig = S.psutil.net_connections
+        S.psutil.net_connections = lambda kind=None: []
+        try:
+            rule = S._custom_clean({"kind": "port", "target": "8080"})
+            self.assertIn("8080", S.custom_check(rule))
+        finally:
+            S.psutil.net_connections = orig
+
+    def test_port_rule_quiet_when_something_listens(self):
+        conn = type("C", (), {"status": "LISTEN", "pid": 1,
+                              "laddr": type("A", (), {"port": 8080})()})()
+        orig = S.psutil.net_connections
+        S.psutil.net_connections = lambda kind=None: [conn]
+        try:
+            rule = S._custom_clean({"kind": "port", "target": "8080"})
+            self.assertIsNone(S.custom_check(rule))
+        finally:
+            S.psutil.net_connections = orig
+
+    def test_unreadable_connections_do_not_cry_wolf(self):
+        orig = S.psutil.net_connections
+
+        def boom(kind=None):
+            raise S.psutil.AccessDenied()
+        S.psutil.net_connections = boom
+        try:
+            self.assertTrue(S._port_listening(8080))
+        finally:
+            S.psutil.net_connections = orig
+
+    def test_path_rule_compares_against_the_limit(self):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "big"), "wb") as f:
+            f.write(b"x" * (3 * 1024 * 1024))
+        over = S._custom_clean({"kind": "path", "target": d, "value": 0.001})
+        under = S._custom_clean({"kind": "path", "target": d, "value": 100})
+        self.assertIn("over the", S.custom_check(over))
+        self.assertIsNone(S.custom_check(under))
+
+    def test_zero_limit_path_rule_never_fires(self):
+        rule = S._custom_clean({"kind": "path", "target": _TMP_HOME, "value": 0})
+        self.assertIsNone(S.custom_check(rule))
+
+
+class FileFinders(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+
+    def _write(self, name, data, age_days=0):
+        p = os.path.join(self.d, name)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(data)
+        if age_days:
+            old = __import__("time").time() - age_days * 86400
+            os.utime(p, (old, old))
+        return p
+
+    def test_finds_identical_files_and_ignores_same_size_differing(self):
+        self._write("a.bin", b"x" * 2_000_000)
+        self._write("b.bin", b"x" * 2_000_000)
+        self._write("sub/c.bin", b"x" * 2_000_000)
+        self._write("d.bin", b"y" * 2_000_000)   # same size, different bytes
+        r = S.find_duplicates(self.d, min_mb=1, seconds=10)
+        self.assertEqual(len(r["groups"]), 1)
+        self.assertEqual(r["groups"][0]["count"], 3)
+        self.assertEqual(r["wasted"], 2 * 2_000_000)
+
+    def test_small_files_are_below_the_floor(self):
+        self._write("a.txt", b"hello")
+        self._write("b.txt", b"hello")
+        self.assertEqual(S.find_duplicates(self.d, min_mb=1, seconds=5)["groups"], [])
+
+    def test_old_large_files(self):
+        self._write("fresh.bin", b"z" * 1_500_000)
+        self._write("stale.bin", b"w" * 1_500_000, age_days=800)
+        r = S.find_old_large(self.d, min_mb=1, days=365, seconds=10)
+        self.assertEqual([os.path.basename(f["path"]) for f in r["files"]],
+                         ["stale.bin"])
+
+    def test_missing_folder_is_rejected(self):
+        with self.assertRaises(ValueError):
+            S.find_duplicates(os.path.join(self.d, "nope"), seconds=2)
+
+
+class HomeLayout(unittest.TestCase):
+    def setUp(self):
+        try:
+            os.remove(S.HOME_LAYOUT_FILE)
+        except OSError:
+            pass
+
+    tearDown = setUp
+
+    def test_absent_layout(self):
+        self.assertIsNone(S.home_layout()["layout"])
+
+    def test_round_trip(self):
+        S.home_layout_save({"layout": {"order": ["cpu", "mem"], "hidden": ["gpu"],
+                                       "sizes": {"cpu": "full"}}})
+        got = S.home_layout()["layout"]
+        self.assertEqual(got["order"], ["cpu", "mem"])
+        self.assertEqual(got["sizes"], {"cpu": "full"})
+
+    def test_drops_junk_ids_and_sizes(self):
+        out = S.home_layout_save({"layout": {
+            "order": ["cpu", "../etc/passwd", 42, "a" * 80],
+            "sizes": {"cpu": "enormous", "mem": "m"}}})["layout"]
+        self.assertEqual(out["order"], ["cpu"])
+        self.assertEqual(out["sizes"], {"mem": "m"})
+
+    def test_null_layout_clears_the_file(self):
+        S.home_layout_save({"layout": {"order": ["cpu"]}})
+        S.home_layout_save({"layout": None})
+        self.assertIsNone(S.home_layout()["layout"])
+
+
+class StaticPathContainment(unittest.TestCase):
+    """_static must not serve anything outside web/static."""
+
+    class _Fake(S.Handler):
+        def __init__(self):            # bypass BaseHTTPRequestHandler.__init__
+            self.sent = []
+            self.wfile = io.BytesIO()
+
+        def _err(self, msg, code=400):
+            self.sent.append(("err", code))
+
+        # _static writes the response itself, so stub the socket plumbing
+        def send_response(self, code, *a):
+            self.sent.append(("send", code))
+
+        def send_header(self, *a):
+            pass
+
+        def end_headers(self):
+            pass
+
+    def _try(self, rel):
+        h = self._Fake()
+        h._static(rel)
+        return h.sent[0]
+
+    def test_escape_attempts_are_404(self):
+        for rel in ("../../../../etc/passwd", "....//....//etc/passwd",
+                    "/etc/passwd", "..%2f..%2fetc/passwd",
+                    "subdir/../../../server.py"):
+            kind, code = self._try(rel)
+            self.assertEqual((kind, code), ("err", 404), rel)
+
+    def test_real_asset_is_served(self):
+        kind, code = self._try("app.js")
+        self.assertEqual((kind, code), ("send", 200))
+
+
+class InstalledPackages(unittest.TestCase):
+    APT = ("accountsservice\t22.07.5\t512\tquery user accounts\n"
+           "acl\t2.3.1\t192\taccess control lists\n"
+           "zlib1g\t1.2.11\t164\tcompression library\n")
+
+    def _listing(self, **kw):
+        orig_for, orig_upd = S._installed_for, S.pkg_updates
+        S._installed_for = lambda mgr: S._rows_from(
+            self.APT, ("name", "version", "size", "summary"), sizes_in_kb=True)
+        S.pkg_updates = lambda *a, **k: {"packages": [{"name": "acl"}]}
+        try:
+            return S.installed_packages(**kw)
+        finally:
+            S._installed_for, S.pkg_updates = orig_for, orig_upd
+
+    def test_parses_versions_and_sizes(self):
+        r = self._listing()
+        self.assertEqual(r["total"], 3)
+        first = r["packages"][0]
+        self.assertEqual(first["name"], "accountsservice")
+        self.assertEqual(first["version"], "22.07.5")
+        self.assertEqual(first["size"], 512 * 1024)   # dpkg reports KB
+
+    def test_filter_matches_name_and_summary(self):
+        self.assertEqual(self._listing(q="zlib")["matched"], 1)
+        self.assertEqual(self._listing(q="control lists")["matched"], 1)
+        self.assertEqual(self._listing(q="nothinghere")["matched"], 0)
+
+    def test_flags_upgradable_from_the_update_list(self):
+        by_name = {p["name"]: p for p in self._listing()["packages"]}
+        self.assertTrue(by_name["acl"]["upgradable"])
+        self.assertFalse(by_name["zlib1g"]["upgradable"])
+
+    def test_sort_by_size(self):
+        names = [p["name"] for p in self._listing(sort="size")["packages"]]
+        self.assertEqual(names[0], "accountsservice")
+
+    def test_limit_caps_and_reports_truncation(self):
+        r = self._listing(limit=2)
+        self.assertEqual(len(r["packages"]), 2)
+        self.assertTrue(r["truncated"])
+
+    def test_unknown_manager(self):
+        with self.assertRaises(ValueError):
+            S._installed_for("brew")
+
+    def test_malformed_rows_are_skipped(self):
+        rows = S._rows_from("good\t1.0\t10\tfine\n\n\t\t\t\n",
+                            ("name", "version", "size", "summary"))
+        self.assertEqual([r["name"] for r in rows], ["good"])
+
+    def test_non_numeric_size_does_not_explode(self):
+        rows = S._rows_from("pkg\t1.0\tunknown\tdesc\n",
+                            ("name", "version", "size", "summary"))
+        self.assertEqual(rows[0]["size"], 0)
+
+
+class PkgActionRouting(unittest.TestCase):
+    def setUp(self):
+        self.jobs = []
+        self._orig = S.start_job
+        S.start_job = lambda argv, title, privileged=False: (
+            self.jobs.append((argv, privileged)), {"id": "x"})[1]
+
+    def tearDown(self):
+        S.start_job = self._orig
+
+    def test_update_and_remove_route_per_manager(self):
+        if not S._PM:
+            self.skipTest("no native package manager on this machine")
+        S.pkg_install("native-update", "htop")
+        self.assertIn("htop", self.jobs[-1][0])
+        self.assertTrue(self.jobs[-1][1], "package changes must be privileged")
+        S.pkg_install("native-remove", "htop")
+        self.assertIn("htop", self.jobs[-1][0])
+
+    def test_snap_and_flatpak_updates(self):
+        S.pkg_install("snap-update", "code")
+        self.assertEqual(self.jobs[-1][0][:2], ["snap", "refresh"])
+        S.pkg_install("flatpak-update", "org.gimp.GIMP")
+        self.assertEqual(self.jobs[-1][0][:2], ["flatpak", "update"])
+        self.assertFalse(self.jobs[-1][1], "flatpak talks to polkit itself")
+
+    def test_bad_names_never_reach_a_command(self):
+        for bad in ("htop; rm -rf /", "--help", "$(id)", "", "a" * 200):
+            with self.assertRaises(ValueError):
+                S.pkg_install("native-update", bad)
+        self.assertEqual(self.jobs, [])
+
+    def test_unknown_manager_rejected(self):
+        with self.assertRaises(ValueError):
+            S.pkg_install("brew-update", "htop")
+
+
+class PerchVersionAndUpdate(unittest.TestCase):
+    def test_version_is_reported(self):
+        self.assertEqual(S.about_info()["version"], S.VERSION)
+        self.assertIn(S.about_info()["install"],
+                      ("git", "deb", "pip", "unknown"))
+
+    def test_about_exposes_where_things_live(self):
+        a = S.about_info()
+        for key in ("root", "python", "config_dir", "cache_dir", "repo", "port"):
+            self.assertIn(key, a)
+
+    def test_version_ordering(self):
+        newer = S._version_tuple
+        self.assertGreater(newer("1.4.0"), newer("1.3.9"))
+        self.assertGreater(newer("1.10.0"), newer("1.9.0"))
+        self.assertGreater(newer("v2.0.0"), newer("1.99.9"))
+        self.assertEqual(newer("1.4.0"), newer("v1.4.0"))
+        self.assertEqual(newer("garbage"), (0,))
+
+    def test_git_update_refuses_a_dirty_checkout(self):
+        orig = S._git
+        S._git = lambda *a, **k: __import__("subprocess").CompletedProcess(
+            a, 0, " M src/perch/server.py\n", "")
+        try:
+            if S.perch_install_kind() != "git":
+                self.skipTest("not a git checkout")
+            with self.assertRaises(ValueError) as cm:
+                S.perch_update_apply()
+            self.assertIn("uncommitted", str(cm.exception))
+        finally:
+            S._git = orig
+
+    def test_unknown_install_kind_explains_itself(self):
+        orig = S.perch_install_kind
+        S.perch_install_kind = lambda: "pip"
+        try:
+            with self.assertRaises(ValueError) as cm:
+                S.perch_update_apply()
+            self.assertIn("pip", str(cm.exception))
+        finally:
+            S.perch_install_kind = orig
 
 
 class HttpSmoke(unittest.TestCase):

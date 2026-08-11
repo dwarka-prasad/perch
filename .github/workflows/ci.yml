@@ -46,6 +46,23 @@ jobs:
           pip wheel --no-deps -w /tmp/wheel .
           ls /tmp/wheel/perch_dashboard-*.whl
 
+  frontend:
+    name: Frontend smoke tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # the harness speaks CDP over the global WebSocket, unflagged from Node 22
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install runtime deps
+        run: pip install psutil pyyaml
+      - name: Drive the real app in headless Chrome
+        run: node tests/frontend/smoke.mjs
+
   package:
     name: Build .deb
     runs-on: ubuntu-latest

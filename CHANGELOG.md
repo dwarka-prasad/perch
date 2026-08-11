@@ -1,5 +1,82 @@
 # Changelog
 
+## 1.4.0
+
+- **Everything you have installed, in one list.** The Packages tab now shows
+  installed software from every manager present — your native one (**apt, dnf,
+  pacman or zypper**), **snap** and **flatpak** — with version, size and
+  description, filterable by name or description, sortable by name or size, and
+  with an *only updatable* toggle. Each row has **Update** and **Remove**, which
+  act on that one package through a password prompt with live output. Filtering
+  and the row cap happen on the server, because a normal desktop has a couple of
+  thousand packages.
+- **Perch tells you what version it is.** The running version sits next to the
+  name in the sidebar, and a new **About Perch** panel in Settings shows the
+  version, how this copy was installed (git checkout / Debian package / pip),
+  where it lives, the Python version, service state, and its config and cache
+  directories. The version now comes from `config.py`, which the server had
+  never actually imported — which is how it drifted to `1.0.0` unnoticed.
+- **Update Perch to the latest stable release** from About. *Check for updates*
+  asks GitHub for the newest published release and shows the release notes —
+  the only thing in Perch that reaches the network, and only when you press the
+  button. *Update now* then does the right thing for how this copy was
+  installed: a fast-forward `git pull` for a checkout, or download-and-install
+  the release `.deb`. It refuses rather than risks anything: a checkout with
+  uncommitted changes, a detached HEAD, or a branch with no upstream all stop
+  with an explanation instead of a merge. A **Restart Perch** button applies the
+  new version, detached so it survives the restart it triggers.
+- **JSON ↔ escaped string** in the Tools tab. *JSON → string* minifies and
+  escapes a document so it can be pasted as a string value inside another one
+  (a ConfigMap entry, a Terraform variable, an env var); *String → JSON*
+  reverses it, accepting the string with or without its surrounding quotes —
+  which is the shape you get when you copy a payload out of a log line. If the
+  unescaped contents aren't JSON it still unescapes them and says so.
+- **Custom alert rules** — the five built-in thresholds only covered
+  machine-wide metrics. You can now add your own rules for the specific things
+  a machine is supposed to be doing: a **systemd user unit that stopped
+  running**, a **port nothing is listening on**, a **process that vanished**,
+  or a **folder that grew past a size limit**. They're checked once a minute
+  and ride the same path as everything else — channels, per-rule cooldown, the
+  master switch and the alert history. Stored in
+  `~/.config/perch/customrules.json`.
+- **Firewall status** on the Network tab, next to the ports it applies to.
+  Reading the live rule set needs root on every firewall tool, so the status
+  (service state, and ufw's own enabled flag) is read without privileges and
+  **Show rules** dumps the real rule set through `pkexec`. If ufw is installed
+  but not enabled, Perch says so — that combination is easy to miss.
+- **Drive health** on the Storage tab: physical devices with model, size and
+  SSD/spinning type read from `/sys/block`, plus a **SMART check** per device
+  via `pkexec smartctl` (with a pointer to install `smartmontools` when it's
+  missing).
+- **Docker disk usage** — `docker system df` broken out by images, containers,
+  volumes and build cache, with what's reclaimable, so you can see what a prune
+  would actually free before running one. Volumes are listed too.
+- **Two new cleanup lenses** in Clean up: a **duplicate finder** (compares size,
+  then a 64 KB fingerprint, then the whole file, so only real candidates are
+  read in full) and **big files you haven't opened in a long time**. Both scan
+  a folder you choose under a time budget and say when they stopped early;
+  neither deletes anything for you.
+- **Start services at login** — the services table gained enable/disable
+  alongside start/stop/restart, and shows which units are set to start at
+  login.
+- **Your home-screen layout now follows you.** It's stored server-side in
+  `~/.config/perch/home.json`, so a different browser or machine gets the same
+  home screen; the browser copy stays as an offline cache. **Export** and
+  **Import** buttons in Customize home move a layout between installs.
+- **Frontend smoke tests.** CI previously checked `app.js` only for syntax. A
+  new suite drives the real app in headless Chrome — boot, live data, the
+  widget gallery, layout persistence across a reload, the alerting switch,
+  custom rules, port filtering, and every tab opening without a console error.
+  Run locally with `make test-frontend`.
+- **The assistant moved out of the sidebar** into a floating button in the
+  bottom-right corner that opens it as a docked chat panel over the current
+  page. Asking about the tab you're looking at no longer means navigating away
+  from it. **Ctrl+I** toggles it, Esc closes it, and the panel shows which
+  provider and model are answering. `#ai` still works as a deep link.
+- Static file serving now proves containment with `realpath` instead of
+  stripping `..` from the request path — a blocklist that has to be re-proved
+  correct every time input encoding changes.
+
 ## 1.3.0
 
 - **A fully customizable home screen** — every item on Overview, the stat tiles

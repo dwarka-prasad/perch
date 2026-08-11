@@ -8,7 +8,7 @@
 <canvas id="bgCanvas"></canvas>
 <div class="layout">
 <nav>
-  <div class="brand">🐦 Perch
+  <div class="brand">🐦 Perch <span id="brandVer" class="bver"></span>
     <span class="muted" style="font-size:10.5px;font-weight:400;display:block;
       margin-top:2px">Ctrl+K for anything</span></div>
   <!-- own scroll container: the tab list scrolls independently of the page,
@@ -38,8 +38,6 @@
     <button data-tab="api">📮 API client</button>
     <button data-tab="runtimes">📚 Runtimes</button>
     <button data-tab="tools">🔧 Tools</button>
-    <div class="ngroup">Assistant</div>
-    <button data-tab="ai">✨ AI</button>
   </div>
   <div id="sbStats"></div>
   <button id="themeBtn">🌓 Theme</button>
@@ -53,6 +51,8 @@
       <span class="muted" id="ovEditHint" style="font-size:12px;display:none;
         margin-right:auto">drag to reorder · <b>S/M/L/▭</b> resizes · ✕ removes</span>
       <button class="btn small" id="ovAdd" style="display:none">＋ Add widget</button>
+      <button class="btn small" id="ovExport" style="display:none" title="copy this layout as JSON">⬆ Export</button>
+      <button class="btn small" id="ovImport" style="display:none" title="paste a layout JSON">⬇ Import</button>
       <button class="btn small" id="ovCustomize">✎ Customize home</button>
       <button class="btn small" id="ovReset" style="display:none">reset layout</button>
     </div>
@@ -134,6 +134,17 @@
         <button class="btn small" id="monAllOff">disable all</button>
         <button class="btn small" id="monTest">🔔 Test notification</button>
         <span class="muted" id="monStat" style="font-size:12px"></span></div></div>
+    <div class="panel"><h2>Custom rules <span class="muted">— watch one specific
+      unit, port, process or folder</span></h2>
+      <div class="row" style="margin-bottom:0">
+        <button class="btn small" id="crAdd">＋ Add rule</button>
+        <button class="btn" id="crSave">💾 Save rules</button>
+        <span class="muted" id="crStat" style="font-size:12px"></span></div>
+      <div id="crRules" style="margin-top:8px"></div>
+      <div class="muted" style="font-size:11.5px;margin-top:6px">Checked once a
+        minute and sent through the same channels, cooldown and master switch as
+        the rules above. Folder rules measure with a short time budget, so very
+        deep trees report a lower bound.</div></div>
     <div class="panel"><h2>Last 24 hours <span class="muted">— 1-minute samples,
       survives restarts</span></h2>
       <svg id="monChart" style="width:100%;height:180px"></svg>
@@ -178,6 +189,8 @@
         <button class="btn small" data-j="min">Minify</button>
         <button class="btn small" data-j="sort">Sort keys</button>
         <button class="btn small" data-j="keys">Copy all key paths</button>
+        <button class="btn small" data-j="str" title="escape this JSON so it can be embedded as a string value">JSON → string</button>
+        <button class="btn small" data-j="unstr" title="unescape a JSON string back into JSON">String → JSON</button>
         <button class="btn small" data-j="y2j">YAML → JSON</button>
         <button class="btn small" data-j="j2y">JSON → YAML</button>
         <button class="btn small" data-j="copy">Copy output</button>
@@ -344,6 +357,13 @@
       without root, and for those Perch gives you the command to copy instead.
       0.0.0.0 / :: means the port accepts connections from the network, not just
       this machine.</div></div>
+    <div class="panel"><h2>Firewall <span class="muted" id="fwState"></span>
+      <button class="btn small" id="fwRules" style="margin-left:8px">Show rules</button></h2>
+      <div id="fwBody" class="muted" style="font-size:12.5px">checking…</div>
+      <div class="muted" style="font-size:11.5px;margin-top:6px">Reading the live
+        rule set needs admin rights on every firewall tool, so <b>Show rules</b>
+        opens a password prompt and streams the output into the job box. The
+        status above is read without privileges.</div></div>
     <div class="panel"><h2>Network interfaces</h2><div id="ifaces"></div></div>
     <div class="panel"><h2>Internet</h2>
       <div class="row">
@@ -363,6 +383,7 @@
         overflow:auto;background:var(--track);padding:10px;border-radius:8px;
         white-space:pre-wrap;font-size:11.5px"></pre>
       <div id="dockerStats" style="margin-top:10px"></div>
+      <div id="dockerDisk" style="margin-top:10px"></div>
       <div id="dockerCompose" style="margin-top:10px"></div>
       <div id="dockerImgs" style="margin-top:10px"></div></div>
     <div class="panel" id="ctrPanel" style="display:none"><h2>Other container environments
@@ -441,6 +462,8 @@
 
   <section id="tab-storage">
     <div class="panel"><h2>Mounted disks</h2><div id="diskList"></div></div>
+    <div class="panel"><h2>Drive health <span class="muted">— physical devices</span></h2>
+      <div id="dhBody" class="muted" style="font-size:12.5px">…</div></div>
     <div class="panel"><h2>Backup <span class="muted">— copy folders somewhere safe (rsync)</span></h2>
       <div class="row" style="align-items:flex-start">
         <span style="width:130px">Folders<br><span class="muted" style="font-size:11px">one per line</span></span>
@@ -514,36 +537,6 @@
         overflow:auto;font-size:11.5px;line-height:1.55"></div></div>
   </section>
 
-  <section id="tab-ai">
-    <div class="panel" style="display:flex;flex-direction:column;
-      height:calc(100vh - 130px)">
-      <div class="row" style="margin-bottom:8px">
-        <span class="muted" style="font-size:12.5px">Powered by your local
-          <b style="color:var(--ink)">Claude Code</b> — answers can reference
-          live system stats.</span>
-        <span style="flex:1"></span>
-        <label class="pill"><input type="checkbox" id="aiSnap" checked>
-          include system snapshot</label>
-        <button class="btn small" id="aiHealth">🩺 Health report</button>
-        <button class="btn small" id="aiReset">＋ New conversation</button>
-      </div>
-      <div class="row" style="margin-bottom:8px">
-        <button class="btn small aiq">Why is my memory usage high right now?</button>
-        <button class="btn small aiq">What can I safely clean to free disk space?</button>
-        <button class="btn small aiq">Any suspicious processes or open ports?</button>
-        <button class="btn small aiq">Suggest kernel tunables for a dev laptop</button>
-      </div>
-      <div id="aiChat" style="flex:1;overflow:auto;display:flex;
-        flex-direction:column;gap:10px;padding:4px 2px"></div>
-      <div class="row" style="margin-top:10px;margin-bottom:0">
-        <textarea id="aiIn" placeholder="Ask anything about this machine… (Enter to send, Shift+Enter for newline)"
-          style="flex:1;height:64px;resize:none;background:var(--page);
-          color:var(--ink);border:1px solid var(--border);border-radius:8px;
-          padding:9px 11px;font:inherit;outline:none"></textarea>
-        <button class="btn" id="aiGo" style="height:44px">Ask ✨</button>
-      </div>
-    </div>
-  </section>
 
   <section id="tab-updates">
     <div class="panel"><h2>Pending package updates
@@ -574,6 +567,32 @@
       </div>
       <div class="muted" style="font-size:12px;margin-top:10px">Installing needs
         admin rights — a password dialog appears. Live output shows in the job box.</div>
+    </div>
+    <div class="panel"><h2>Installed software
+      <span class="muted" id="instCount"></span></h2>
+      <div class="row">
+        <div class="seg" id="instMgr">
+          <button data-mgr="native" class="on">System</button>
+          <button data-mgr="snap" class="cap-snap">Snap</button>
+          <button data-mgr="flatpak" class="cap-flatpak">Flatpak</button>
+        </div>
+        <input type="text" id="instQ" placeholder="Filter installed packages…"
+          style="flex:1;min-width:200px">
+        <select id="instSort" class="btn">
+          <option value="name">Sort: name</option>
+          <option value="size">Sort: size</option>
+        </select>
+        <label class="pill"><input type="checkbox" id="instUpg"> only updatable</label>
+        <button class="btn small" id="instReload">↻</button>
+      </div>
+      <div style="overflow:auto;max-height:56vh"><table id="instTable">
+        <thead><tr><th>Package</th><th>Version</th><th class="num">Size</th>
+        <th></th></tr></thead><tbody></tbody></table></div>
+      <div class="muted" style="font-size:12px;margin-top:8px"><b>Update</b> and
+        <b>Remove</b> act on one package and show a password dialog; the live
+        output appears in the job box. Removing a system package can take its
+        dependents with it — read what the package manager says before
+        confirming in the terminal output.</div>
     </div>
   </section>
 
@@ -641,6 +660,22 @@
         sent back to the browser. Ollama needs no key — good for private, offline
         summaries. MCP-style tool servers aren't chat endpoints; point the
         OpenAI-compatible option at any local gateway instead.</div>
+    </div>
+    <div class="panel"><h2>About Perch
+      <span class="muted" id="aboutVer"></span></h2>
+      <div id="aboutBody" class="muted" style="font-size:12.5px">…</div>
+      <div class="row" style="margin-top:10px;margin-bottom:0">
+        <button class="btn" id="updCheck">⬆ Check for updates</button>
+        <button class="btn" id="updApply" style="display:none">Update now</button>
+        <button class="btn small" id="perchRestart">↻ Restart Perch</button>
+        <span class="muted" id="updStat" style="font-size:12px"></span>
+      </div>
+      <div id="updNotes" style="display:none;margin-top:8px;font-size:12px;
+        background:var(--track);padding:10px;border-radius:8px;max-height:220px;
+        overflow:auto;white-space:pre-wrap"></div>
+      <div class="muted" style="font-size:11.5px;margin-top:6px">Checking asks
+        GitHub for the newest published release — it's the only thing here that
+        reaches the network, and only when you press the button.</div>
     </div>
     <div class="panel"><h2>Dashboard theme <span class="muted">— this app's look</span></h2>
       <div class="row"><span style="width:130px">Simple mode</span>
@@ -727,6 +762,33 @@
       their caches automatically, but a running app may briefly misbehave if its
       cache vanishes. Delete with judgement.</div>
       <table id="cacheTop"><tbody></tbody></table></div>
+    <div class="panel"><h2>Duplicate files <span class="muted">— identical copies
+      wasting space</span></h2>
+      <div class="row">
+        <input type="text" id="dupPath" class="mono" style="flex:1;min-width:220px"
+          placeholder="folder to scan (default: your home)">
+        <span class="muted" style="font-size:12px">over</span>
+        <input type="text" id="dupMin" value="1" style="width:60px;min-width:60px" title="minimum size in MB">
+        <span class="muted" style="font-size:12px">MB</span>
+        <button class="btn" id="dupGo">Scan</button>
+        <span class="muted" id="dupStat" style="font-size:12px"></span></div>
+      <div id="dupBody"></div>
+      <div class="muted" style="font-size:11.5px;margin-top:6px">Compares size
+        first, then a 64 KB fingerprint, then the whole file — so only real
+        candidates are read in full. The scan stops after ~20 s and says so;
+        nothing is deleted for you.</div></div>
+    <div class="panel"><h2>Big files you haven't opened in a long time</h2>
+      <div class="row">
+        <input type="text" id="oldPath" class="mono" style="flex:1;min-width:220px"
+          placeholder="folder to scan (default: your home)">
+        <span class="muted" style="font-size:12px">over</span>
+        <input type="text" id="oldMin" value="100" style="width:64px;min-width:64px" title="minimum size in MB">
+        <span class="muted" style="font-size:12px">MB, untouched</span>
+        <input type="text" id="oldDays" value="365" style="width:64px;min-width:64px" title="days">
+        <span class="muted" style="font-size:12px">days</span>
+        <button class="btn" id="oldGo">Scan</button>
+        <span class="muted" id="oldStat" style="font-size:12px"></span></div>
+      <div id="oldBody"></div></div>
     <div class="panel"><h2>System-level (needs sudo — run in a terminal)</h2>
       <div id="sudoList" class="muted">…</div></div>
     <div class="panel"><h2>Automatic tidy-up</h2>
@@ -803,6 +865,32 @@
       <span class="mono" id="vimStat" style="font-size:12px;font-weight:700"></span>
       <span class="muted" id="dStatus" style="font-size:12px"></span>
     </div>
+  </div>
+</div>
+<!-- Assistant: a floating dock rather than a tab, so you can ask about the
+     screen you are already looking at without navigating away from it. -->
+<button id="aiFab" title="Ask the assistant (Ctrl+I)" aria-label="Ask the assistant">✨</button>
+<div id="aiDock" role="dialog" aria-label="Assistant">
+  <header>
+    <b style="font-size:13.5px">✨ Assistant</b>
+    <span class="muted" id="aiProv" style="font-size:11.5px">local Claude Code</span>
+    <span style="flex:1"></span>
+    <label class="pill" title="send a live system snapshot with your question">
+      <input type="checkbox" id="aiSnap" checked> snapshot</label>
+    <button class="btn small" id="aiHealth" title="Generate a system health report">🩺</button>
+    <button class="btn small" id="aiReset" title="New conversation">＋</button>
+    <button class="btn small" id="aiClose" title="Close (Esc)">✕</button>
+  </header>
+  <div class="aiq-row">
+    <button class="btn small aiq">Why is my memory usage high right now?</button>
+    <button class="btn small aiq">What can I safely clean to free disk space?</button>
+    <button class="btn small aiq">Any suspicious processes or open ports?</button>
+    <button class="btn small aiq">Suggest kernel tunables for a dev laptop</button>
+  </div>
+  <div id="aiChat"></div>
+  <div class="aifoot">
+    <textarea id="aiIn" placeholder="Ask anything about this machine… (Enter to send, Shift+Enter for newline)"></textarea>
+    <button class="btn" id="aiGo">Ask ✨</button>
   </div>
 </div>
 <div class="toast" id="toast"></div>

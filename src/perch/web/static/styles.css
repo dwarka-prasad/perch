@@ -82,6 +82,9 @@ nav{width:210px;flex:none;padding:16px 12px;
   -webkit-backdrop-filter:var(--blur)}
 nav .brand{font-weight:750;font-size:15.5px;padding:6px 10px 12px;
   letter-spacing:-.01em}
+nav .brand .bver{font-size:10px;font-weight:600;color:var(--muted);
+  vertical-align:middle;letter-spacing:0}
+nav .brand .bver.new{color:var(--s2);cursor:pointer}
 nav .ngroup{font-size:10px;font-weight:700;letter-spacing:.1em;
   text-transform:uppercase;color:var(--muted);padding:13px 10px 4px}
 nav button{all:unset;display:flex;gap:9px;align-items:center;padding:7px 11px;
@@ -258,12 +261,53 @@ input[type=text]:focus,input[type=password]:focus,input[type=search]:focus{
 .name{cursor:pointer}
 .name:hover{text-decoration:underline}
 .muted{color:var(--muted)}
-.toast{position:fixed;bottom:20px;right:20px;
+/* ---- assistant: floating action button + docked chat panel ---- */
+#aiFab{position:fixed;right:22px;bottom:22px;z-index:7;
+  width:54px;height:54px;border-radius:50%;border:none;cursor:pointer;
+  font-size:23px;line-height:1;color:#fff;background:var(--accent-grad);
+  box-shadow:var(--shadow-lg),var(--glow);
+  display:flex;align-items:center;justify-content:center;
+  transition:transform .16s ease,box-shadow .16s ease}
+#aiFab:hover{transform:translateY(-2px) scale(1.05)}
+#aiFab:active{transform:translateY(0) scale(.98)}
+#aiFab.on{font-size:20px}
+#aiDock{position:fixed;right:22px;bottom:88px;z-index:9;display:none;
+  width:min(430px,calc(100vw - 44px));height:min(640px,calc(100vh - 140px));
+  flex-direction:column;overflow:hidden;
+  background:var(--glass-strong);backdrop-filter:var(--blur);
+  -webkit-backdrop-filter:var(--blur);
+  border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-lg)}
+#aiDock.open{display:flex;animation:aipop .18s cubic-bezier(.22,.61,.36,1)}
+@keyframes aipop{from{opacity:0;transform:translateY(10px) scale(.98)}
+  to{opacity:1;transform:none}}
+#aiDock header{display:flex;gap:7px;align-items:center;padding:11px 13px;
+  border-bottom:1px solid var(--border);flex-wrap:wrap}
+#aiDock .aiq-row{display:flex;gap:6px;padding:9px 13px 0;overflow-x:auto;
+  scrollbar-width:none}
+#aiDock .aiq-row::-webkit-scrollbar{display:none}
+#aiDock .aiq-row .aiq{white-space:nowrap;flex:none}
+#aiChat{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;
+  gap:10px;padding:11px 13px}
+#aiDock .aifoot{display:flex;gap:8px;align-items:flex-end;padding:10px 13px;
+  border-top:1px solid var(--border)}
+#aiDock .aifoot textarea{flex:1;height:60px;resize:none;background:var(--page);
+  color:var(--ink);border:1px solid var(--border);border-radius:9px;
+  padding:9px 11px;font:inherit;font-size:13px;outline:none}
+#aiDock .aifoot textarea:focus{border-color:var(--s1);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--s1) 20%,transparent)}
+#aiDock .aifoot .btn{height:40px}
+#aiDock .bubble{max-width:94%}
+@media (max-width:760px){
+  #aiDock{right:10px;left:10px;width:auto;bottom:82px;
+    height:min(70vh,calc(100vh - 150px))}
+  #aiFab{right:14px;bottom:14px;width:48px;height:48px;font-size:20px}
+}
+.toast{position:fixed;bottom:22px;right:90px;
   background:var(--glass-strong);backdrop-filter:var(--blur);
   -webkit-backdrop-filter:var(--blur);
   border:1px solid var(--border);border-radius:12px;padding:11px 17px;
   box-shadow:var(--shadow-lg);font-size:13.5px;display:none;
-  max-width:420px;z-index:9}
+  max-width:min(420px,calc(100vw - 120px));z-index:13}
 select.btn{appearance:auto;padding:7px 9px}
 .tin{background:var(--glass-hi);color:var(--ink);border:1px solid var(--border);
   border-radius:10px;padding:9px 12px;outline:none;resize:vertical;

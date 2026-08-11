@@ -17,6 +17,7 @@ import secrets
 import select
 import shutil
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -35,6 +36,11 @@ except ImportError:  # self-install the only external dependency
     subprocess.run([sys.executable, "-m", "pip", "install",
                     "--user", "psutil"], check=True)
     import psutil
+
+try:
+    from .config import VERSION
+except ImportError:      # loaded as a plain file rather than as a package
+    VERSION = "0.0.0"
 
 PORT = int(os.environ.get("PERCH_PORT") or
            (sys.argv[1] if len(sys.argv) > 1 and sys.argv[1].isdigit()
@@ -544,6 +550,108 @@ def quick_size(path, budget=8):
     return size
 
 
+# ---- cleanup lenses: duplicates, and big files nobody has opened in years ---
+# The filename index holds paths only, so both of these walk the chosen folder
+# directly under a wall-clock deadline. Bounded work, honest partial results:
+# `truncated` tells the UI the walk stopped early.
+
+def _walk_files(root, deadline, min_size):
+    root = os.path.realpath(os.path.expanduser(root or HOME))
+    if not os.path.isdir(root):
+        raise ValueError("not a folder: " + root)
+    truncated = False
+    for base, dirs, files in os.walk(root, topdown=True):
+        if time.time() > deadline:
+            truncated = True
+            break
+        dirs[:] = [d for d in dirs if d not in PRUNE_NAMES
+                   and not os.path.islink(os.path.join(base, d))]
+        for name in files:
+            p = os.path.join(base, name)
+            try:
+                st = os.lstat(p)
+            except OSError:
+                continue
+            if not stat.S_ISREG(st.st_mode) or st.st_size < min_size:
+                continue
+            yield p, st
+    if truncated:
+        yield None, None          # sentinel: the walk was cut short
+
+
+def _digest(path, whole=False):
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            if whole:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            else:
+                h.update(f.read(1 << 16))
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def find_duplicates(path=None, min_mb=1, seconds=20):
+    """Group identical files. Size first, then a 64 KB head digest, then a full
+    digest — so most candidates are eliminated without being read in full."""
+    deadline = time.time() + max(2, min(60, float(seconds)))
+    min_size = max(1, int(float(min_mb) * 1024 * 1024))
+    by_size, truncated = {}, False
+    for p, st in _walk_files(path, deadline, min_size):
+        if p is None:
+            truncated = True
+            break
+        by_size.setdefault(st.st_size, []).append(p)
+    groups = []
+    for size, paths in sorted(by_size.items(), key=lambda kv: -kv[0]):
+        if len(paths) < 2 or time.time() > deadline:
+            continue
+        by_head = {}
+        for p in paths:
+            d = _digest(p)
+            if d:
+                by_head.setdefault(d, []).append(p)
+        for head, same_head in by_head.items():
+            if len(same_head) < 2:
+                continue
+            by_full = {}
+            for p in same_head:
+                d = _digest(p, whole=True)
+                if d:
+                    by_full.setdefault(d, []).append(p)
+            for full, dupes in by_full.items():
+                if len(dupes) > 1:
+                    groups.append({"size": size, "count": len(dupes),
+                                   "wasted": size * (len(dupes) - 1),
+                                   "paths": sorted(dupes)[:12]})
+    groups.sort(key=lambda g: -g["wasted"])
+    return {"groups": groups[:60], "truncated": truncated,
+            "wasted": sum(g["wasted"] for g in groups),
+            "root": os.path.realpath(os.path.expanduser(path or HOME))}
+
+
+def find_old_large(path=None, min_mb=100, days=365, seconds=20):
+    """Big files nothing has read in a long time — the other cleanup lens."""
+    deadline = time.time() + max(2, min(60, float(seconds)))
+    min_size = max(1, int(float(min_mb) * 1024 * 1024))
+    cutoff = time.time() - max(1, float(days)) * 86400
+    out, truncated = [], False
+    for p, st in _walk_files(path, deadline, min_size):
+        if p is None:
+            truncated = True
+            break
+        last = max(st.st_atime, st.st_mtime)
+        if last <= cutoff:
+            out.append({"path": p, "size": st.st_size, "atime": st.st_atime,
+                        "mtime": st.st_mtime})
+    out.sort(key=lambda f: -f["size"])
+    return {"files": out[:200], "truncated": truncated,
+            "total": sum(f["size"] for f in out),
+            "root": os.path.realpath(os.path.expanduser(path or HOME))}
+
+
 def cleanup_report():
     deadline_each = 6
     targets = []
@@ -854,6 +962,99 @@ def net_ports():
     return {"listen": uniq, "established": established, "ifaces": ifaces}
 
 
+# ---- firewall ----
+# Reading the actual rule set needs root everywhere (ufw/nft/iptables all
+# refuse otherwise), so unprivileged we report what *is* readable — whether the
+# service runs and ufw's own config flag — and offer the rule dump as a pkexec
+# job, the same pattern as package installs.
+
+def firewall_status():
+    tools = {}
+    for name, unit in (("ufw", "ufw"), ("firewalld", "firewalld"),
+                       ("nftables", "nftables")):
+        if not (shutil.which(name) or shutil.which(name.rstrip("d"))):
+            continue
+        r = _run(["systemctl", "is-active", unit], capture_output=True,
+                 text=True, timeout=8)
+        tools[name] = {"service": r.stdout.strip() or "unknown"}
+    enabled = None
+    try:
+        with open("/etc/ufw/ufw.conf") as f:
+            for line in f:
+                if line.strip().startswith("ENABLED="):
+                    enabled = line.strip().split("=", 1)[1].strip().lower() == "yes"
+    except OSError:
+        pass
+    if "ufw" in tools:
+        tools["ufw"]["enabled"] = enabled
+    return {"tools": tools, "ufw_enabled": enabled,
+            "any": bool(tools),
+            "can_dump": bool(shutil.which("ufw") or shutil.which("nft")
+                             or shutil.which("iptables"))}
+
+
+def firewall_rules_job():
+    """Dump the live rule set — needs root, so it runs as a privileged job."""
+    if shutil.which("ufw"):
+        argv, title = ["ufw", "status", "verbose"], "Firewall rules (ufw)"
+    elif shutil.which("nft"):
+        argv, title = ["nft", "list", "ruleset"], "Firewall rules (nftables)"
+    elif shutil.which("iptables"):
+        argv, title = ["iptables", "-L", "-n", "-v"], "Firewall rules (iptables)"
+    else:
+        raise ValueError("no firewall tool found (looked for ufw, nft, iptables)")
+    return start_job(argv, title, privileged=True)
+
+
+# ---- disk health ----
+
+def disk_health():
+    """Physical devices from /sys/block (unprivileged). SMART itself needs
+    root, so the detailed report is a separate privileged job."""
+    out = []
+    try:
+        names = sorted(os.listdir("/sys/block"))
+    except OSError:
+        return {"devices": [], "smartctl": False}
+    for name in names:
+        if name.startswith(("loop", "ram", "dm-", "zram", "sr")):
+            continue
+        base = "/sys/block/" + name
+        def rd(rel, default=""):
+            try:
+                with open(os.path.join(base, rel)) as f:
+                    return f.read().strip()
+            except OSError:
+                return default
+        sectors = rd("size", "0")
+        try:
+            size = int(sectors) * 512
+        except ValueError:
+            size = 0
+        model = rd("device/model") or rd("device/name")
+        out.append({
+            "name": name, "size": size,
+            "model": model, "vendor": rd("device/vendor"),
+            "rotational": rd("queue/rotational") == "1",
+            "scheduler": rd("queue/scheduler"),
+            "readonly": rd("ro") == "1",
+        })
+    return {"devices": out, "smartctl": bool(shutil.which("smartctl"))}
+
+
+SMART_DEV_RE = re.compile(r"[a-zA-Z0-9]{1,20}")
+
+
+def smart_job(device):
+    if not shutil.which("smartctl"):
+        raise ValueError("smartctl not installed — install the smartmontools "
+                         "package to read drive health")
+    if not SMART_DEV_RE.fullmatch(device or ""):
+        raise ValueError("bad device name")
+    return start_job(["smartctl", "-H", "-A", "/dev/" + device],
+                     f"SMART health for /dev/{device}", privileged=True)
+
+
 def kill_port(port, force=False, pid=None):
     """Stop whatever is listening on `port`.
 
@@ -1117,16 +1318,32 @@ def services():
             return []
         return json.loads(r.stdout or "[]")
 
+    # whether each unit starts at login, so the UI can offer enable/disable
+    enabled = {}
+    r = _run(["systemctl", "--user", "list-unit-files", "--type=service",
+              "--no-pager", "--output=json"],
+             capture_output=True, text=True, timeout=10)
+    if r.returncode == 0:
+        try:
+            for f in json.loads(r.stdout or "[]"):
+                enabled[f.get("unit_file", "")] = f.get("state", "")
+        except ValueError:
+            pass
     user = [{"name": u["unit"], "active": u["active"], "sub": u["sub"],
-             "desc": u["description"]} for u in list_units("--user")]
+             "desc": u["description"],
+             "enabled": enabled.get(u["unit"], "")} for u in list_units("--user")]
     user.sort(key=lambda u: (u["active"] != "active", u["name"]))
     failed = [{"name": u["unit"], "desc": u["description"]}
               for u in list_units("--system", ("--state=failed",))]
     return {"user": user, "failed_system": failed}
 
 
+SVC_ACTIONS = ("start", "stop", "restart", "enable", "disable")
+
+
 def service_action(name, action):
-    if action not in ("start", "stop", "restart") or not SVC_RE.fullmatch(name):
+    """Act on a user unit. enable/disable change whether it starts at login."""
+    if action not in SVC_ACTIONS or not SVC_RE.fullmatch(name):
         raise ValueError("bad service action")
     r = _run(["systemctl", "--user", action, name],
                        capture_output=True, text=True, timeout=30)
@@ -1818,6 +2035,40 @@ def docker_compose_action(project, action):
                      f"compose {action} — {project}")
 
 
+def docker_disk():
+    """`docker system df` — what images/containers/volumes actually cost, so
+    you can see what pruning would reclaim before you prune."""
+    r = _run(["docker", "system", "df", "--format", "{{json .}}"],
+             capture_output=True, text=True, timeout=20)
+    if r.returncode != 0:
+        raise ValueError((r.stderr.strip() or "docker unavailable")[:300])
+    rows = []
+    for line in r.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        rows.append({"type": d.get("Type", ""), "total": d.get("TotalCount", ""),
+                     "active": d.get("Active", ""), "size": d.get("Size", ""),
+                     "reclaimable": d.get("Reclaimable", "")})
+    volumes = []
+    rv = _run(["docker", "volume", "ls", "--format", "{{json .}}"],
+              capture_output=True, text=True, timeout=15)
+    if rv.returncode == 0:
+        for line in rv.stdout.splitlines():
+            if not line.strip():
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            volumes.append({"name": d.get("Name", ""), "driver": d.get("Driver", ""),
+                            "size": d.get("Size", "")})
+    return {"usage": rows, "volumes": volumes[:60]}
+
+
 def docker_prune(kind):
     if kind == "images":
         return start_job(["docker", "image", "prune", "-f"],
@@ -1868,6 +2119,148 @@ def mon_save(new):
             cfg[k]["th"] = float(new[k].get("th", cfg[k]["th"]))
     atomic_write(MON_CFG_FILE, json.dumps(cfg))
     return cfg
+
+
+# ---- custom rules: watch a unit, a port, a process or a folder's size ----
+# The five built-in rules above cover machine-wide metrics; these cover the
+# specific things a given machine is supposed to be doing. They ride the same
+# firing path (cooldown, master switch, channels, history) as everything else.
+
+CUSTOM_FILE = os.path.join(CFG_DIR, "customrules.json")
+CUSTOM_MAX = 24
+CUSTOM_KINDS = ("unit", "port", "process", "path")
+CUSTOM_LABELS = {
+    "unit": "systemd user unit is not running",
+    "port": "nothing is listening on port",
+    "process": "no running process matches",
+    "path": "folder is larger than (GB)",
+}
+
+
+def _custom_clean(r):
+    """Validate one rule, or raise. Returns the stored form."""
+    kind = r.get("kind")
+    if kind not in CUSTOM_KINDS:
+        raise ValueError("unknown rule type")
+    target = str(r.get("target", "")).strip()
+    if not target:
+        raise ValueError("rule needs something to watch")
+    if kind == "unit":
+        if not SVC_RE.fullmatch(target):
+            raise ValueError(f"'{target}' is not a unit name (try foo.service)")
+    elif kind == "port":
+        if not target.isdigit() or not 1 <= int(target) <= 65535:
+            raise ValueError(f"'{target}' is not a port number")
+        target = str(int(target))
+    elif kind == "process":
+        if len(target) > 64:
+            raise ValueError("process pattern is too long")
+    elif kind == "path":
+        target = os.path.realpath(os.path.expanduser(target))
+    value = r.get("value", 0)
+    try:
+        value = float(value or 0)
+    except (TypeError, ValueError):
+        raise ValueError("threshold must be a number")
+    name = str(r.get("name", "")).strip()[:60] or f"{kind}:{target}"
+    return {"name": name, "kind": kind, "target": target, "value": value,
+            "enabled": bool(r.get("enabled", True))}
+
+
+def custom_rules():
+    try:
+        with open(CUSTOM_FILE) as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return []
+    out = []
+    for r in (saved if isinstance(saved, list) else [])[:CUSTOM_MAX]:
+        try:
+            out.append(_custom_clean(r))
+        except ValueError:
+            continue          # drop anything that no longer validates
+    return out
+
+
+def custom_save(rules):
+    if not isinstance(rules, list):
+        raise ValueError("expected a list of rules")
+    if len(rules) > CUSTOM_MAX:
+        raise ValueError(f"at most {CUSTOM_MAX} custom rules")
+    cleaned = [_custom_clean(r) for r in rules]
+    os.makedirs(CFG_DIR, exist_ok=True)
+    atomic_write(CUSTOM_FILE, json.dumps(cleaned))
+    return cleaned
+
+
+def _unit_active(unit):
+    r = _run(["systemctl", "--user", "is-active", unit],
+             capture_output=True, text=True, timeout=8)
+    return r.stdout.strip() == "active"
+
+
+def _port_listening(port):
+    try:
+        for c in psutil.net_connections(kind="inet"):
+            if c.status == "LISTEN" and c.laddr.port == port:
+                return True
+    except psutil.Error:
+        return True           # can't tell — don't cry wolf
+    return False
+
+
+def _process_running(pattern):
+    pat = pattern.lower()
+    for p in psutil.process_iter(["name"]):
+        try:
+            if pat in (p.info["name"] or "").lower():
+                return True
+        except psutil.Error:
+            continue
+    return False
+
+
+def fmt_bytes(n):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if n >= 10 or unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024.0
+
+
+def custom_check(rule):
+    """Return an alert message when the rule is breached, else None."""
+    kind, target = rule["kind"], rule["target"]
+    if kind == "unit":
+        if not _unit_active(target):
+            return f"{rule['name']} — {target} is not running"
+    elif kind == "port":
+        if not _port_listening(int(target)):
+            return f"{rule['name']} — nothing is listening on port {target}"
+    elif kind == "process":
+        if not _process_running(target):
+            return f"{rule['name']} — no process matching '{target}' is running"
+    elif kind == "path":
+        limit = rule["value"]
+        if limit <= 0:
+            return None
+        size = quick_size(target, budget=4)
+        if size > limit * (1024 ** 3):
+            return (f"{rule['name']} — {target} is {fmt_bytes(size)}, "
+                    f"over the {limit:g} GB limit")
+    return None
+
+
+def custom_tick():
+    """Evaluate every enabled custom rule; called once a minute."""
+    for i, rule in enumerate(custom_rules()):
+        if not rule.get("enabled", True):
+            continue
+        try:
+            msg = custom_check(rule)
+        except Exception:  # noqa: BLE001 — one bad rule must not stop the rest
+            continue
+        if msg:
+            _fire(f"custom:{i}:{rule['kind']}:{rule['target']}", msg, None)
 
 
 # ---- alert firing state: breach tracking, per-rule cooldown, master switch ---
@@ -1925,6 +2318,48 @@ def alert_ctl_set(action, minutes=0):
         _mon_breach.clear()
         return alert_ctl()
     raise ValueError("unknown alert action")
+
+
+# ---- home-screen layout, stored server-side so it follows the user ----
+# The browser keeps a localStorage copy as an offline cache; this file is the
+# source of truth, which is what makes the layout survive a different browser.
+
+HOME_LAYOUT_FILE = os.path.join(CFG_DIR, "home.json")
+
+
+def home_layout():
+    try:
+        with open(HOME_LAYOUT_FILE) as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return {"layout": None}
+    return {"layout": saved if isinstance(saved, dict) else None}
+
+
+def home_layout_save(body):
+    """Store {order, hidden, sizes}. Ids are opaque to the server — the widget
+    catalogue lives in the frontend — so we only bound shape and size."""
+    layout = body.get("layout") if isinstance(body, dict) else None
+    if layout is None:
+        try:
+            os.remove(HOME_LAYOUT_FILE)
+        except OSError:
+            pass
+        return {"layout": None}
+    if not isinstance(layout, dict):
+        raise ValueError("layout must be an object")
+    ident = re.compile(r"[\w-]{1,40}")
+    order = [w for w in (layout.get("order") or [])[:120]
+             if isinstance(w, str) and ident.fullmatch(w)]
+    hidden = [w for w in (layout.get("hidden") or [])[:120]
+              if isinstance(w, str) and ident.fullmatch(w)]
+    sizes = {k: v for k, v in (layout.get("sizes") or {}).items()
+             if isinstance(k, str) and ident.fullmatch(k)
+             and v in ("s", "m", "l", "full")}
+    clean = {"order": order, "hidden": hidden, "sizes": sizes}
+    os.makedirs(CFG_DIR, exist_ok=True)
+    atomic_write(HOME_LAYOUT_FILE, json.dumps(clean))
+    return {"layout": clean}
 
 
 def notify(title, msg, critical=True):
@@ -2091,6 +2526,10 @@ def monitor_tick(entry):
                                 "disk": round(worst, 1)}) + "\n")
         _prune_jsonl(MINUTES_FILE, 4000)
         _prune_jsonl(ALERTS_FILE, 1000)
+        # custom rules shell out (systemctl, folder sizing), so once a minute
+        # on the sampler thread rather than on every 2 s tick
+        if not alerts_paused():
+            custom_tick()
 
 
 def _prune_jsonl(path, keep):
@@ -2115,7 +2554,8 @@ def _tail_jsonl(path, n):
 def monitor_state(brief=False):
     """Rules, alerting state and recent alerts. `brief` drops the 24 h history
     (1440 samples) for callers that only want the events — e.g. home widgets."""
-    st = {"cfg": mon_cfg(), "ctl": alert_ctl(),
+    st = {"cfg": mon_cfg(), "ctl": alert_ctl(), "custom": custom_rules(),
+          "custom_kinds": CUSTOM_LABELS,
           "events": list(reversed(_tail_jsonl(ALERTS_FILE, 100)))}
     if not brief:
         st["history"] = _tail_jsonl(MINUTES_FILE, 1440)
@@ -2450,6 +2890,133 @@ def proc_detail(pid):
 # ------------------------------------------------------- caps / raw / yaml ---
 
 
+# ------------------------------------------------- about & self-update ------
+# Where this copy of Perch came from decides how it can be updated, so detect
+# the install method rather than guessing. Nothing here reaches the network
+# unless the user explicitly asks it to.
+
+PERCH_REPO = os.environ.get("PERCH_REPO", "dwarka-prasad/perch")
+PERCH_ROOT = os.path.realpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+
+
+def _version_tuple(v):
+    out = []
+    for part in re.split(r"[.-]", (v or "").lstrip("vV")):
+        if part.isdigit():
+            out.append(int(part))
+        else:
+            break
+    return tuple(out) or (0,)
+
+
+def perch_install_kind():
+    """git | deb | pip | unknown — how this copy was installed."""
+    if os.path.isdir(os.path.join(PERCH_ROOT, ".git")) and shutil.which("git"):
+        return "git"
+    here = os.path.abspath(__file__)
+    if shutil.which("dpkg"):
+        r = _run(["dpkg", "-S", here], capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and ":" in r.stdout:
+            return "deb"
+    if "site-packages" in here or "dist-packages" in here:
+        return "pip"
+    return "unknown"
+
+
+def _perch_service_state():
+    r = _run(["systemctl", "--user", "is-active", "perch.service"],
+             capture_output=True, text=True, timeout=8)
+    return r.stdout.strip() or "unknown"
+
+
+def about_info():
+    return {
+        "version": VERSION,
+        "install": perch_install_kind(),
+        "root": PERCH_ROOT,
+        "python": sys.version.split()[0],
+        "service": _perch_service_state(),
+        "config_dir": CFG_DIR,
+        "cache_dir": MON_DIR,
+        "repo": PERCH_REPO,
+        "host": HOST,
+        "port": PORT,
+    }
+
+
+def perch_update_check():
+    """Ask GitHub for the newest published release. Explicit, never automatic."""
+    import urllib.request as ur
+    url = f"https://api.github.com/repos/{PERCH_REPO}/releases/latest"
+    req = ur.Request(url, headers={"Accept": "application/vnd.github+json",
+                                   "User-Agent": "perch"})
+    try:
+        with ur.urlopen(req, timeout=15) as resp:
+            data = json.load(resp)
+    except Exception as e:  # noqa: BLE001 — offline is a normal answer here
+        raise ValueError(f"could not reach GitHub: {e}")
+    tag = (data.get("tag_name") or "").strip()
+    latest = tag.lstrip("vV")
+    deb = next((a["browser_download_url"] for a in data.get("assets", [])
+                if a.get("name", "").endswith(".deb")), None)
+    return {"current": VERSION, "latest": latest, "tag": tag,
+            "newer": _version_tuple(latest) > _version_tuple(VERSION),
+            "url": data.get("html_url", ""),
+            "published": data.get("published_at", ""),
+            "notes": (data.get("body") or "")[:4000],
+            "deb": deb, "install": perch_install_kind()}
+
+
+def _git(*args, timeout=60):
+    return _run(["git", "-C", PERCH_ROOT, *args], capture_output=True,
+                text=True, timeout=timeout)
+
+
+def perch_update_apply():
+    """Update in place. Refuses anything that could lose local work."""
+    kind = perch_install_kind()
+    if kind == "git":
+        if _git("status", "--porcelain").stdout.strip():
+            raise ValueError("this checkout has uncommitted changes — commit or "
+                             "stash them first, then update")
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        if branch == "HEAD":
+            raise ValueError("this checkout is on a detached HEAD — check out a "
+                             "branch first")
+        if not _git("rev-parse", "--abbrev-ref",
+                    "@{u}").stdout.strip():
+            raise ValueError(f"branch '{branch}' has no upstream to pull from")
+        return start_job(["git", "-C", PERCH_ROOT, "pull", "--ff-only"],
+                         f"Update Perch ({branch}, fast-forward only)")
+    if kind == "deb":
+        info = perch_update_check()
+        if not info["deb"]:
+            raise ValueError("the latest release has no .deb attached")
+        dest = os.path.join(MON_DIR, f"perch-{info['latest']}.deb")
+        os.makedirs(MON_DIR, exist_ok=True)
+        return start_job(
+            ["sh", "-c",
+             f"set -e; curl -fsSL -o {_sh_quote(dest)} {_sh_quote(info['deb'])}; "
+             f"apt-get install -y {_sh_quote(dest)}"],
+            f"Update Perch to {info['latest']} (.deb)", privileged=True)
+    raise ValueError(
+        f"this copy of Perch was installed with '{kind}' — update it the same "
+        "way you installed it (pip install --upgrade, or your distro package)")
+
+
+def perch_restart():
+    """Restart the user service, detached so it outlives this request."""
+    if _perch_service_state() == "unknown":
+        raise ValueError("not running under the perch user service — restart it "
+                         "the way you started it")
+    subprocess.Popen(
+        ["sh", "-c", "sleep 2; systemctl --user restart perch.service"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return {"ok": True, "restarting_in": 2}
+
+
 def capabilities():
     editor = next((e for e in ("code", "subl", "gedit") if shutil.which(e)),
                   None)
@@ -2605,6 +3172,12 @@ _PM_REMOVE = {
     "pacman": lambda n: ["pacman", "-R", "--noconfirm", n],
     "zypper": lambda n: ["zypper", "-n", "remove", n],
 }
+_PM_UPDATE_ONE = {
+    "apt": lambda n: ["apt-get", "install", "--only-upgrade", "-y", n],
+    "dnf": lambda n: ["dnf", "upgrade", "-y", n],
+    "pacman": lambda n: ["pacman", "-S", "--noconfirm", n],
+    "zypper": lambda n: ["zypper", "-n", "update", n],
+}
 _PM_UPGRADE = {
     "apt": ["sh", "-c", "apt-get update && apt-get upgrade -y"],
     "dnf": ["dnf", "upgrade", "-y"],
@@ -2697,6 +3270,111 @@ def pkg_search(q):
     return out
 
 
+# ---- everything installed, from every package manager present ----
+
+def _rows_from(out, cols, sizes_in_kb=False):
+    """Tab-separated query output -> package dicts."""
+    pkgs = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if not parts or not parts[0].strip():
+            continue
+        d = dict(zip(cols, [p.strip() for p in parts]))
+        try:
+            size = int(d.get("size") or 0) * (1024 if sizes_in_kb else 1)
+        except ValueError:
+            size = 0
+        pkgs.append({"name": d.get("name", ""), "version": d.get("version", ""),
+                     "size": size, "summary": (d.get("summary") or "")[:160]})
+    return pkgs
+
+
+def _installed_for(mgr):
+    """Full installed list for one manager, unsorted and unfiltered."""
+    cols = ("name", "version", "size", "summary")
+    if mgr == "native":
+        if _PM == "apt":
+            r = _run(["dpkg-query", "-W", "-f",
+                      "${Package}\t${Version}\t${Installed-Size}\t"
+                      "${binary:Summary}\n"],
+                     capture_output=True, text=True, timeout=30)
+            return _rows_from(r.stdout, cols, sizes_in_kb=True)
+        if _PM in ("dnf", "zypper"):
+            r = _run(["rpm", "-qa", "--qf",
+                      "%{NAME}\t%{VERSION}-%{RELEASE}\t%{SIZE}\t%{SUMMARY}\n"],
+                     capture_output=True, text=True, timeout=45)
+            return _rows_from(r.stdout, cols)
+        if _PM == "pacman":
+            if shutil.which("expac"):
+                r = _run(["expac", "-Q", "%n\t%v\t%m\t%d"],
+                         capture_output=True, text=True, timeout=30)
+                return _rows_from(r.stdout, cols)
+            r = _run(["pacman", "-Q"], capture_output=True, text=True, timeout=30)
+            return [{"name": p.split()[0], "version": p.split()[-1],
+                     "size": 0, "summary": ""}
+                    for p in r.stdout.splitlines() if p.strip()]
+        return []
+    if mgr == "snap":
+        if not _HAS_SNAP:
+            return []
+        r = _run(["snap", "list"], capture_output=True, text=True, timeout=25)
+        out = []
+        for line in r.stdout.splitlines()[1:]:      # drop the header row
+            f = line.split()
+            if len(f) >= 2:
+                out.append({"name": f[0], "version": f[1], "size": 0,
+                            "summary": " ".join(f[4:6]) if len(f) > 5 else ""})
+        return out
+    if mgr == "flatpak":
+        if not _HAS_FLATPAK:
+            return []
+        r = _run(["flatpak", "list", "--app",
+                  "--columns=application,version,size,name"],
+                 capture_output=True, text=True, timeout=25)
+        out = []
+        for line in r.stdout.splitlines():
+            f = [x.strip() for x in line.split("\t")]
+            if f and f[0]:
+                out.append({"name": f[0], "version": f[1] if len(f) > 1 else "",
+                            "size": 0,
+                            "summary": (f[3] if len(f) > 3 else "")[:160]})
+        return out
+    raise ValueError("unknown package manager")
+
+
+def installed_packages(mgr="native", q="", limit=300, sort="name"):
+    """Installed packages for one manager, filtered and capped.
+
+    The full list is thousands of rows on a normal desktop, so filtering and
+    the cap happen here rather than shipping it all to the browser.
+    """
+    pkgs = _installed_for(mgr)
+    total = len(pkgs)
+    q = (q or "").strip().lower()
+    if q:
+        pkgs = [p for p in pkgs
+                if q in p["name"].lower() or q in p["summary"].lower()]
+    upgradable = set()
+    if mgr == "native":
+        try:
+            upgradable = {p["name"] for p in pkg_updates()["packages"]}
+        except Exception:  # noqa: BLE001 — the list is still useful without it
+            pass
+    for p in pkgs:
+        p["upgradable"] = p["name"] in upgradable
+    if sort == "size":
+        pkgs.sort(key=lambda p: -p["size"])
+    else:
+        pkgs.sort(key=lambda p: p["name"].lower())
+    try:
+        limit = max(1, min(2000, int(limit)))
+    except (TypeError, ValueError):
+        limit = 300
+    return {"mgr": mgr, "pm": _PM, "total": total, "matched": len(pkgs),
+            "packages": pkgs[:limit], "truncated": len(pkgs) > limit,
+            "bytes": sum(p["size"] for p in pkgs)}
+
+
 def pkg_install(mgr, name):
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.+_-]{0,80}", name):
         raise ValueError("invalid package name")
@@ -2718,6 +3396,15 @@ def pkg_install(mgr, name):
     if mgr == "flatpak-remove":
         return start_job(["flatpak", "uninstall", "-y", name],
                          f"Remove {name} (flatpak)")
+    if mgr in ("native-update", "apt-update") and _PM:
+        return start_job(_PM_UPDATE_ONE[_PM](name),
+                         f"Update {name} ({_PM})", privileged=True)
+    if mgr == "snap-update":
+        return start_job(["snap", "refresh", name],
+                         f"Update {name} (snap)", privileged=True)
+    if mgr == "flatpak-update":
+        return start_job(["flatpak", "update", "-y", "--noninteractive", name],
+                         f"Update {name} (flatpak)")
     raise ValueError("unknown package manager")
 
 
@@ -3870,8 +4557,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
 
     def _static(self, rel):
-        rel = rel.replace("..", "").lstrip("/")
-        path = os.path.join(WEB_DIR, "static", rel)
+        # containment by realpath, not by stripping "..": a blocklist has to be
+        # re-proved correct every time the input encoding changes
+        root = os.path.realpath(os.path.join(WEB_DIR, "static"))
+        path = os.path.realpath(os.path.join(root, rel.lstrip("/")))
+        if path != root and not path.startswith(root + os.sep):
+            return self._err("not found", 404)
         if not os.path.isfile(path):
             return self._err("not found", 404)
         with open(path, "rb") as f:
@@ -4070,6 +4761,30 @@ class Handler(BaseHTTPRequestHandler):
                                            qs.get("ns", [""])[0]))
             if route == "/api/alertctl":
                 return self._json(alert_ctl())
+            if route == "/api/firewall":
+                return self._json(firewall_status())
+            if route == "/api/diskhealth":
+                return self._json(disk_health())
+            if route == "/api/dockerdisk":
+                return self._json(docker_disk())
+            if route == "/api/homelayout":
+                return self._json(home_layout())
+            if route == "/api/about":
+                return self._json(about_info())
+            if route == "/api/perchupdate":
+                return self._json(perch_update_check())
+            if route == "/api/installed":
+                return self._json(installed_packages(
+                    qs.get("mgr", ["native"])[0], qs.get("q", [""])[0],
+                    qs.get("limit", ["300"])[0], qs.get("sort", ["name"])[0]))
+            if route == "/api/dupes":
+                return self._json(find_duplicates(
+                    qs.get("path", [""])[0], qs.get("min", ["1"])[0],
+                    qs.get("secs", ["20"])[0]))
+            if route == "/api/oldfiles":
+                return self._json(find_old_large(
+                    qs.get("path", [""])[0], qs.get("min", ["100"])[0],
+                    qs.get("days", ["365"])[0], qs.get("secs", ["20"])[0]))
             return self._err("not found", 404)
         except Exception as e:  # noqa: BLE001 — surfaced to the UI
             return self._err(e)
@@ -4237,6 +4952,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True,
                                    "ctl": alert_ctl_set(body.get("action", ""),
                                                         body.get("minutes", 0))})
+            if route == "/api/customrules":
+                return self._json({"ok": True,
+                                   "rules": custom_save(body.get("rules", []))})
+            if route == "/api/homelayout":
+                return self._json(home_layout_save(body))
+            if route == "/api/firewallrules":
+                return self._json(firewall_rules_job())
+            if route == "/api/smart":
+                return self._json(smart_job(body.get("device", "")))
+            if route == "/api/perchupdate":
+                return self._json(perch_update_apply())
+            if route == "/api/perchrestart":
+                return self._json(perch_restart())
             if route == "/api/health":
                 return self._json(health_report())
             return self._err("not found", 404)
