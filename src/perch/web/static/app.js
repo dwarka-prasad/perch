@@ -769,6 +769,37 @@ const HOME_DEFAULT=["cpu","mem","net","gpu","core","disk","temp","battery",
 const HOME_SIZES=["s","m","l","full"];
 const HOME_SIZE_LABEL={s:"S",m:"M",l:"L",full:"▭"};
 
+/* The server holds the authoritative layout (~/.config/perch/home.json) so it
+   follows you to another browser; localStorage stays as an offline cache and
+   the fallback when the server has never been written to. */
+let homeSynced=false;
+async function homeLoadRemote(){
+  try{
+    const r=await api("/api/homelayout");
+    if(r.layout&&(r.layout.order||[]).length){
+      localStorage.perchHome=JSON.stringify(r.layout);
+      applyHome();
+    }else{
+      // first run on this machine: seed the server from whatever this browser has
+      const local=localStorage.perchHome;
+      if(local)homeSaveRemote(JSON.parse(local));
+    }
+  }catch(e){/* offline or older server — the localStorage copy still works */}
+  homeSynced=true;
+}
+let homeSaveTimer=null;
+function homeSaveRemote(layout){
+  clearTimeout(homeSaveTimer);
+  homeSaveTimer=setTimeout(()=>{
+    api("/api/homelayout",{method:"POST",body:JSON.stringify({layout})})
+      .catch(()=>{});
+  },600);
+}
+/* single place that persists a layout: browser cache + server */
+function homeWrite(st){
+  localStorage.perchHome=JSON.stringify(st);
+  homeSaveRemote(st);
+}
 function homeState(){
   let st=null;
   try{st=JSON.parse(localStorage.perchHome||"null");}catch(e){}
@@ -793,7 +824,7 @@ function saveHome(){
   st.hidden=Object.keys(HOME_WIDGETS).filter(id=>!shown.includes(id));
   [...grid.children].forEach(el=>{
     if(el.dataset.w&&el.dataset.size)st.sizes[el.dataset.w]=el.dataset.size;});
-  localStorage.perchHome=JSON.stringify(st);
+  homeWrite(st);
 }
 function homeEl(id){
   const grid=$("#ovGrid");
@@ -895,7 +926,7 @@ function ovDecorate(){
         const st=homeState();
         st.hidden=st.hidden.filter(x=>x!==el.dataset.w).concat(el.dataset.w);
         st.order=st.order.filter(x=>x!==el.dataset.w);
-        localStorage.perchHome=JSON.stringify(st);
+        homeWrite(st);
         applyHome();toast(`${HOME_WIDGETS[el.dataset.w].title} removed`);};
       el.appendChild(ctl);
     }
@@ -909,14 +940,31 @@ $("#ovCustomize")&&($("#ovCustomize").onclick=()=>{
   $("#ovCustomize").textContent=ovEditing?"✓ Done":"✎ Customize home";
   $("#ovReset").style.display=ovEditing?"":"none";
   $("#ovAdd").style.display=ovEditing?"":"none";
+  $("#ovExport").style.display=ovEditing?"":"none";
+  $("#ovImport").style.display=ovEditing?"":"none";
   $("#ovEditHint").style.display=ovEditing?"":"none";
   ovDecorate();
   if(!ovEditing){saveHome();toast("home layout saved");}
 });
-$("#ovReset")&&($("#ovReset").onclick=()=>{
-  if(!confirm("Reset the home screen to its default layout?"))return;
+$("#ovReset")&&($("#ovReset").onclick=async()=>{
+  if(!confirm("Reset the home screen to its default layout?\nThis clears the saved layout on this machine too."))return;
   localStorage.removeItem("perchHome");localStorage.removeItem("perchTiles");
+  try{await api("/api/homelayout",{method:"POST",body:JSON.stringify({layout:null})});}
+  catch(e){}
   location.reload();});
+/* ---- layout export / import ---- */
+$("#ovExport")&&($("#ovExport").onclick=()=>{
+  copyText(JSON.stringify(homeState(),null,1));
+  toast("layout JSON copied to the clipboard");});
+$("#ovImport")&&($("#ovImport").onclick=()=>{
+  const raw=prompt("Paste a layout JSON (from Export on another machine):");
+  if(!raw)return;
+  try{
+    const st=JSON.parse(raw);
+    if(!st||!Array.isArray(st.order))throw new Error("that isn't a layout");
+    homeWrite({order:st.order,hidden:st.hidden||[],sizes:st.sizes||{}});
+    applyHome();toast("layout imported");
+  }catch(e){toast("import failed: "+e.message,false);}});
 $("#ovGrid")&&$("#ovGrid").addEventListener("dragstart",e=>{
   if(!ovEditing)return;dragEl=e.target.closest("[data-w]");
   if(dragEl)dragEl.classList.add("dragging");});
@@ -952,7 +1000,7 @@ function galRender(){
     const id=el.dataset.add,s=homeState();
     s.hidden=s.hidden.filter(x=>x!==id);
     s.order=s.order.filter(x=>x!==id).concat(id);
-    localStorage.perchHome=JSON.stringify(s);
+    homeWrite(s);
     applyHome();galRender();
     toast(`${HOME_WIDGETS[id].title} added to the home screen`);
   });
@@ -1146,6 +1194,7 @@ document.querySelectorAll("[data-dest]").forEach(b=>b.onclick=()=>{
 });
 
 applyHome();
+homeLoadRemote();
 initAccentUI();
 if(bgMode!=="none")startBg(bgMode);
 /* ---- overview: critical logs needing attention ---- */
@@ -1230,7 +1279,7 @@ $("#bkRun")&&($("#bkRun").onclick=async()=>{
   catch(e){toast(e.message,false);}
 });
 async function loadStorage(){
-  loadBackup();
+  loadBackup();loadDiskHealth();
   const ds=await api("/api/disks");
   const big=ds.filter(d=>d.used>=500*2**20||d.mount==="/");
   const small=ds.filter(d=>!big.includes(d));
@@ -1891,6 +1940,7 @@ $("#ovSqFull")&&($("#ovSqFull").onclick=ovSqFull);
 /* ---- network ---- */
 let netData=null;
 async function loadNet(){
+  loadFirewall();
   try{
     netData=await api("/api/net");
     $("#estCount").textContent=`· ${netData.established} established connections`;
@@ -1901,6 +1951,81 @@ async function loadNet(){
       ||'<span class="muted">no interfaces up</span>';
   }catch(e){toast(e.message,false);}
 }
+/* ---- firewall (status unprivileged, rule dump via pkexec) ---- */
+async function loadFirewall(){
+  const body=$("#fwBody");if(!body)return;
+  try{
+    const f=await api("/api/firewall");
+    if(!f.any){
+      $("#fwState").textContent="— none detected";
+      body.innerHTML='<span class="muted">no firewall tool installed '+
+        '(looked for ufw, firewalld, nftables)</span>';
+      $("#fwRules").style.display="none";return;}
+    $("#fwRules").style.display=f.can_dump?"":"none";
+    const on=f.ufw_enabled;
+    $("#fwState").innerHTML=on===true?'— <b style="color:var(--goodtext)">on</b>'
+      :on===false?'— <b style="color:var(--serious)">off</b>':"";
+    body.innerHTML=Object.entries(f.tools).map(([name,t])=>`
+      <span class="pill" style="margin:3px 6px 3px 0">
+        ${t.service==="active"?"🟢":"⚪"} <b>${esc(name)}</b>
+        service ${esc(t.service)}${t.enabled===false?" · not enabled":
+          t.enabled===true?" · enabled":""}</span>`).join("")+
+      (on===false?'<div style="margin-top:6px;color:var(--serious)">⚠ ufw is '+
+        'installed but not enabled — inbound ports are not being filtered.</div>':"");
+  }catch(e){body.innerHTML='<span class="muted">firewall status unavailable</span>';}
+}
+$("#fwRules")&&($("#fwRules").onclick=()=>{
+  if(!confirm("Show the live firewall rules?\nThis needs admin rights — a password dialog appears."))return;
+  runJob(api("/api/firewallrules",{method:"POST",body:"{}"}));});
+
+/* ---- drive health ---- */
+async function loadDiskHealth(){
+  const body=$("#dhBody");if(!body)return;
+  try{
+    const d=await api("/api/diskhealth");
+    if(!d.devices.length){body.innerHTML='<span class="muted">no physical devices found</span>';return;}
+    body.innerHTML='<table><thead><tr><th>Device</th><th>Model</th>'+
+      '<th class="num">Size</th><th>Type</th><th></th></tr></thead><tbody>'+
+      d.devices.map(x=>`<tr>
+        <td class="mono"><b>/dev/${esc(x.name)}</b></td>
+        <td class="muted">${esc([x.vendor,x.model].filter(Boolean).join(" ")||"—")}</td>
+        <td class="num">${fmtB(x.size)}</td>
+        <td>${x.rotational?"spinning disk":"SSD / flash"}${x.readonly?" · read-only":""}</td>
+        <td class="num">${d.smartctl?`<button class="btn small" data-smart="${esc(x.name)}">SMART check</button>`:""}</td>
+      </tr>`).join("")+'</tbody></table>'+
+      (d.smartctl?'<div class="muted" style="font-size:11.5px;margin-top:6px">'+
+        'SMART needs admin rights — a password dialog appears and the report '+
+        'streams into the job box.</div>'
+       :'<div class="muted" style="font-size:11.5px;margin-top:6px">Install '+
+        '<code>smartmontools</code> to read drive health (wear, reallocated '+
+        'sectors, hours powered on).</div>');
+    body.querySelectorAll("[data-smart]").forEach(b=>b.onclick=()=>
+      runJob(api("/api/smart",{method:"POST",
+        body:JSON.stringify({device:b.dataset.smart})})));
+  }catch(e){body.innerHTML='<span class="muted">drive list unavailable</span>';}
+}
+
+/* ---- docker disk usage ---- */
+async function loadDockerDisk(){
+  const box=$("#dockerDisk");if(!box)return;
+  try{
+    const d=await api("/api/dockerdisk");
+    box.innerHTML='<h2 style="margin:10px 0 4px">Disk usage</h2>'+
+      '<table><thead><tr><th>Type</th><th class="num">Items</th>'+
+      '<th class="num">Active</th><th class="num">Size</th>'+
+      '<th class="num">Reclaimable</th></tr></thead><tbody>'+
+      d.usage.map(u=>`<tr><td><b>${esc(u.type)}</b></td>
+        <td class="num">${esc(String(u.total))}</td>
+        <td class="num muted">${esc(String(u.active))}</td>
+        <td class="num">${esc(u.size)}</td>
+        <td class="num" style="color:var(--s2)">${esc(u.reclaimable)}</td></tr>`).join("")+
+      '</tbody></table>'+
+      (d.volumes.length?'<div class="muted" style="font-size:11.5px;margin-top:6px">volumes: '+
+        d.volumes.slice(0,12).map(v=>`<span class="pill" style="margin:2px 4px 2px 0">${esc(v.name)}</span>`).join("")+
+        (d.volumes.length>12?` +${d.volumes.length-12} more`:"")+'</div>':"");
+  }catch(e){box.innerHTML="";}
+}
+
 function renderPorts(){
   if(!netData)return;
   const q=($("#portQ").value||"").trim().toLowerCase();
@@ -1955,7 +2080,7 @@ $("#portPub")&&($("#portPub").onchange=renderPorts);
 /* ---- dev ---- */
 async function loadDev(){
   loadDocker();loadServices();loadTools();loadDockerStats();loadCompose();
-  loadContainers();
+  loadContainers();loadDockerDisk();
 }
 /* ---- other container environments: podman / nerdctl / LXD / kubernetes ---- */
 const CTR_STATE_DOT=s=>s==="running"?"🟢":s==="paused"?"🟡":
@@ -2114,11 +2239,17 @@ async function loadServices(){
     $("#svct tbody").innerHTML=s.user.map(u=>`
       <tr><td class="mono" style="font-size:12px">${esc(u.name)}</td>
       <td>${u.active==="active"?"🟢":u.active==="failed"?"🔴":"⚪"} ${esc(u.sub)}</td>
+      <td>${u.enabled==="enabled"?'<span class="pill">starts at login</span>'
+        :u.enabled==="disabled"?'<span class="muted">manual</span>':""}</td>
       <td class="muted">${esc(u.desc)}</td>
       <td class="num" style="white-space:nowrap">
         <button class="btn small" data-svc="restart" data-name="${esc(u.name)}">Restart</button>
         ${u.active==="active"?`<button class="btn small danger" data-svc="stop" data-name="${esc(u.name)}">Stop</button>`
           :`<button class="btn small" data-svc="start" data-name="${esc(u.name)}">Start</button>`}
+        ${u.enabled==="enabled"
+          ?`<button class="btn small" data-svc="disable" data-name="${esc(u.name)}">Disable</button>`
+          :u.enabled==="disabled"
+            ?`<button class="btn small" data-svc="enable" data-name="${esc(u.name)}">Enable</button>`:""}
       </td></tr>`).join("");
     $("#svcFailed").innerHTML=s.failed_system.length?
       `<b style="color:var(--crit)">⚠ failed system services:</b> `+
@@ -2156,6 +2287,7 @@ async function loadMonitor(){
   try{
     const m=await api("/api/monitor");
     if(m.ctl)renderAlertCtl(m.ctl);
+    crRules=m.custom||[];crKinds=m.custom_kinds||{};renderCustom();
     $("#monRules tbody").innerHTML=Object.entries(m.cfg).map(([k,r])=>`
       <tr><td style="width:30px"><input type="checkbox" class="mon-on" data-k="${k}" ${r.on?"checked":""}></td>
       <td>${esc(MON_LABELS[k]||k)}</td>
@@ -2170,6 +2302,54 @@ async function loadMonitor(){
     loadChannels();loadLogwatch();
   }catch(e){toast(e.message,false);}
 }
+/* ---- custom alert rules (unit / port / process / folder size) ---- */
+let crRules=[],crKinds={};
+function renderCustom(){
+  const kinds=Object.keys(crKinds).length?crKinds:{unit:"unit",port:"port",
+    process:"process",path:"folder size"};
+  const ph={unit:"name.service",port:"8080",process:"postgres",
+    path:"~/Downloads"};
+  $("#crRules").innerHTML=crRules.map((r,i)=>`
+    <div class="row" style="margin-bottom:6px">
+      <input type="text" class="crName" data-i="${i}" value="${esc(r.name||"")}"
+        placeholder="rule name" style="width:150px">
+      <select class="btn crKind" data-i="${i}">${Object.entries(kinds).map(([k,label])=>
+        `<option value="${k}" ${k===r.kind?"selected":""}>${esc(label)}</option>`).join("")}</select>
+      <input type="text" class="crTarget mono" data-i="${i}" value="${esc(r.target||"")}"
+        placeholder="${ph[r.kind]||""}" style="flex:1;min-width:150px">
+      <input type="text" class="crValue" data-i="${i}" value="${r.value||0}"
+        style="width:70px;min-width:70px" title="threshold (GB, folder rules only)"
+        ${r.kind==="path"?"":"disabled"}>
+      <label class="pill"><input type="checkbox" class="crEn" data-i="${i}"
+        ${r.enabled!==false?"checked":""}> on</label>
+      <span class="hint" data-crdel="${i}" style="color:var(--crit);cursor:pointer">✕</span>
+    </div>`).join("")||'<span class="muted" style="font-size:12px">no custom rules yet</span>';
+  $("#crRules").querySelectorAll("[data-crdel]").forEach(el=>el.onclick=()=>{
+    collectCustom();crRules.splice(+el.dataset.crdel,1);renderCustom();});
+  // the threshold box only means anything for folder-size rules
+  $("#crRules").querySelectorAll(".crKind").forEach(s=>s.onchange=()=>{
+    collectCustom();renderCustom();});
+}
+function collectCustom(){
+  const g=c=>[...document.querySelectorAll(c)];
+  crRules=g(".crName").map((n,i)=>({
+    name:n.value.trim(),
+    kind:g(".crKind")[i].value,
+    target:g(".crTarget")[i].value.trim(),
+    value:parseFloat(g(".crValue")[i].value)||0,
+    enabled:g(".crEn")[i].checked}));
+}
+$("#crAdd")&&($("#crAdd").onclick=()=>{collectCustom();
+  crRules.push({name:"",kind:"unit",target:"",value:0,enabled:true});renderCustom();});
+$("#crSave")&&($("#crSave").onclick=async()=>{
+  collectCustom();
+  try{const r=await api("/api/customrules",{method:"POST",
+    body:JSON.stringify({rules:crRules.filter(x=>x.target)})});
+    crRules=r.rules;renderCustom();
+    $("#crStat").textContent=`saved ${r.rules.length} rule(s) ✓`;
+    toast("custom rules saved");}
+  catch(e){$("#crStat").textContent="";toast(e.message,false);}});
+
 /* ---- alert channels ---- */
 let ntCfg={desktop:true,channels:[]};
 async function loadChannels(){
@@ -3255,6 +3435,57 @@ async function loadMaint(){
         loadMaint();}catch(e){toast(e.message,false);}};
   }catch(e){}
 }
+/* ---- cleanup lenses: duplicates and stale big files ---- */
+$("#dupGo")&&($("#dupGo").onclick=async()=>{
+  const btn=$("#dupGo");btn.disabled=true;
+  $("#dupStat").textContent="scanning… up to 20 s";
+  $("#dupBody").innerHTML="";
+  try{
+    const r=await api("/api/dupes?path="+encodeURIComponent($("#dupPath").value.trim())+
+      "&min="+encodeURIComponent($("#dupMin").value.trim()||"1"));
+    $("#dupStat").textContent=`${r.groups.length} group(s) · ${fmtB(r.wasted)} reclaimable`+
+      (r.truncated?" · stopped early, narrow the folder for a full picture":"");
+    $("#dupBody").innerHTML=r.groups.length?'<table><thead><tr><th>Copies</th>'+
+      '<th class="num">Each</th><th class="num">Wasted</th><th>Files</th></tr></thead><tbody>'+
+      r.groups.map(g=>`<tr>
+        <td><b>${g.count}</b></td>
+        <td class="num">${fmtB(g.size)}</td>
+        <td class="num" style="color:var(--s2)">${fmtB(g.wasted)}</td>
+        <td>${g.paths.map(p=>`<div class="mono" style="font-size:11px;
+          overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          <span class="name" data-p="${esc(p)}" data-dir="false">${esc(p)}</span></div>`).join("")}</td>
+      </tr>`).join("")+'</tbody></table>'
+      :`<span class="muted" style="font-size:12.5px">no duplicates found in ${esc(r.root)}</span>`;
+    hookRowActions($("#dupBody"));
+  }catch(e){$("#dupStat").textContent="";toast(e.message,false);}
+  btn.disabled=false;
+});
+$("#oldGo")&&($("#oldGo").onclick=async()=>{
+  const btn=$("#oldGo");btn.disabled=true;
+  $("#oldStat").textContent="scanning… up to 20 s";
+  $("#oldBody").innerHTML="";
+  try{
+    const r=await api("/api/oldfiles?path="+encodeURIComponent($("#oldPath").value.trim())+
+      "&min="+encodeURIComponent($("#oldMin").value.trim()||"100")+
+      "&days="+encodeURIComponent($("#oldDays").value.trim()||"365"));
+    $("#oldStat").textContent=`${r.files.length} file(s) · ${fmtB(r.total)} total`+
+      (r.truncated?" · stopped early":"");
+    $("#oldBody").innerHTML=r.files.length?'<table><thead><tr><th>File</th>'+
+      '<th class="num">Size</th><th class="num">Last touched</th><th></th></tr></thead><tbody>'+
+      r.files.slice(0,60).map(f=>`<tr>
+        <td class="mono" style="font-size:11.5px;max-width:520px;overflow:hidden;
+          text-overflow:ellipsis;white-space:nowrap">
+          <span class="name" data-p="${esc(f.path)}" data-dir="false">${esc(f.path)}</span></td>
+        <td class="num">${fmtB(f.size)}</td>
+        <td class="num muted">${ago(Math.max(f.atime,f.mtime))}</td>
+        <td class="num"><button class="btn small" data-goto="${esc(f.path.slice(0,f.path.lastIndexOf("/"))||"/")}">Browse</button></td>
+      </tr>`).join("")+'</tbody></table>'
+      :`<span class="muted" style="font-size:12.5px">nothing that big and that old in ${esc(r.root)}</span>`;
+    hookRowActions($("#oldBody"));
+  }catch(e){$("#oldStat").textContent="";toast(e.message,false);}
+  btn.disabled=false;
+});
+
 async function loadClean(){
   loadMaint();
   $("#cleanTargets").textContent="scanning sizes…";

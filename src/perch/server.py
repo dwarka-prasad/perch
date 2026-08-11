@@ -17,6 +17,7 @@ import secrets
 import select
 import shutil
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -544,6 +545,108 @@ def quick_size(path, budget=8):
     return size
 
 
+# ---- cleanup lenses: duplicates, and big files nobody has opened in years ---
+# The filename index holds paths only, so both of these walk the chosen folder
+# directly under a wall-clock deadline. Bounded work, honest partial results:
+# `truncated` tells the UI the walk stopped early.
+
+def _walk_files(root, deadline, min_size):
+    root = os.path.realpath(os.path.expanduser(root or HOME))
+    if not os.path.isdir(root):
+        raise ValueError("not a folder: " + root)
+    truncated = False
+    for base, dirs, files in os.walk(root, topdown=True):
+        if time.time() > deadline:
+            truncated = True
+            break
+        dirs[:] = [d for d in dirs if d not in PRUNE_NAMES
+                   and not os.path.islink(os.path.join(base, d))]
+        for name in files:
+            p = os.path.join(base, name)
+            try:
+                st = os.lstat(p)
+            except OSError:
+                continue
+            if not stat.S_ISREG(st.st_mode) or st.st_size < min_size:
+                continue
+            yield p, st
+    if truncated:
+        yield None, None          # sentinel: the walk was cut short
+
+
+def _digest(path, whole=False):
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            if whole:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            else:
+                h.update(f.read(1 << 16))
+    except OSError:
+        return None
+    return h.hexdigest()
+
+
+def find_duplicates(path=None, min_mb=1, seconds=20):
+    """Group identical files. Size first, then a 64 KB head digest, then a full
+    digest — so most candidates are eliminated without being read in full."""
+    deadline = time.time() + max(2, min(60, float(seconds)))
+    min_size = max(1, int(float(min_mb) * 1024 * 1024))
+    by_size, truncated = {}, False
+    for p, st in _walk_files(path, deadline, min_size):
+        if p is None:
+            truncated = True
+            break
+        by_size.setdefault(st.st_size, []).append(p)
+    groups = []
+    for size, paths in sorted(by_size.items(), key=lambda kv: -kv[0]):
+        if len(paths) < 2 or time.time() > deadline:
+            continue
+        by_head = {}
+        for p in paths:
+            d = _digest(p)
+            if d:
+                by_head.setdefault(d, []).append(p)
+        for head, same_head in by_head.items():
+            if len(same_head) < 2:
+                continue
+            by_full = {}
+            for p in same_head:
+                d = _digest(p, whole=True)
+                if d:
+                    by_full.setdefault(d, []).append(p)
+            for full, dupes in by_full.items():
+                if len(dupes) > 1:
+                    groups.append({"size": size, "count": len(dupes),
+                                   "wasted": size * (len(dupes) - 1),
+                                   "paths": sorted(dupes)[:12]})
+    groups.sort(key=lambda g: -g["wasted"])
+    return {"groups": groups[:60], "truncated": truncated,
+            "wasted": sum(g["wasted"] for g in groups),
+            "root": os.path.realpath(os.path.expanduser(path or HOME))}
+
+
+def find_old_large(path=None, min_mb=100, days=365, seconds=20):
+    """Big files nothing has read in a long time — the other cleanup lens."""
+    deadline = time.time() + max(2, min(60, float(seconds)))
+    min_size = max(1, int(float(min_mb) * 1024 * 1024))
+    cutoff = time.time() - max(1, float(days)) * 86400
+    out, truncated = [], False
+    for p, st in _walk_files(path, deadline, min_size):
+        if p is None:
+            truncated = True
+            break
+        last = max(st.st_atime, st.st_mtime)
+        if last <= cutoff:
+            out.append({"path": p, "size": st.st_size, "atime": st.st_atime,
+                        "mtime": st.st_mtime})
+    out.sort(key=lambda f: -f["size"])
+    return {"files": out[:200], "truncated": truncated,
+            "total": sum(f["size"] for f in out),
+            "root": os.path.realpath(os.path.expanduser(path or HOME))}
+
+
 def cleanup_report():
     deadline_each = 6
     targets = []
@@ -854,6 +957,99 @@ def net_ports():
     return {"listen": uniq, "established": established, "ifaces": ifaces}
 
 
+# ---- firewall ----
+# Reading the actual rule set needs root everywhere (ufw/nft/iptables all
+# refuse otherwise), so unprivileged we report what *is* readable — whether the
+# service runs and ufw's own config flag — and offer the rule dump as a pkexec
+# job, the same pattern as package installs.
+
+def firewall_status():
+    tools = {}
+    for name, unit in (("ufw", "ufw"), ("firewalld", "firewalld"),
+                       ("nftables", "nftables")):
+        if not (shutil.which(name) or shutil.which(name.rstrip("d"))):
+            continue
+        r = _run(["systemctl", "is-active", unit], capture_output=True,
+                 text=True, timeout=8)
+        tools[name] = {"service": r.stdout.strip() or "unknown"}
+    enabled = None
+    try:
+        with open("/etc/ufw/ufw.conf") as f:
+            for line in f:
+                if line.strip().startswith("ENABLED="):
+                    enabled = line.strip().split("=", 1)[1].strip().lower() == "yes"
+    except OSError:
+        pass
+    if "ufw" in tools:
+        tools["ufw"]["enabled"] = enabled
+    return {"tools": tools, "ufw_enabled": enabled,
+            "any": bool(tools),
+            "can_dump": bool(shutil.which("ufw") or shutil.which("nft")
+                             or shutil.which("iptables"))}
+
+
+def firewall_rules_job():
+    """Dump the live rule set — needs root, so it runs as a privileged job."""
+    if shutil.which("ufw"):
+        argv, title = ["ufw", "status", "verbose"], "Firewall rules (ufw)"
+    elif shutil.which("nft"):
+        argv, title = ["nft", "list", "ruleset"], "Firewall rules (nftables)"
+    elif shutil.which("iptables"):
+        argv, title = ["iptables", "-L", "-n", "-v"], "Firewall rules (iptables)"
+    else:
+        raise ValueError("no firewall tool found (looked for ufw, nft, iptables)")
+    return start_job(argv, title, privileged=True)
+
+
+# ---- disk health ----
+
+def disk_health():
+    """Physical devices from /sys/block (unprivileged). SMART itself needs
+    root, so the detailed report is a separate privileged job."""
+    out = []
+    try:
+        names = sorted(os.listdir("/sys/block"))
+    except OSError:
+        return {"devices": [], "smartctl": False}
+    for name in names:
+        if name.startswith(("loop", "ram", "dm-", "zram", "sr")):
+            continue
+        base = "/sys/block/" + name
+        def rd(rel, default=""):
+            try:
+                with open(os.path.join(base, rel)) as f:
+                    return f.read().strip()
+            except OSError:
+                return default
+        sectors = rd("size", "0")
+        try:
+            size = int(sectors) * 512
+        except ValueError:
+            size = 0
+        model = rd("device/model") or rd("device/name")
+        out.append({
+            "name": name, "size": size,
+            "model": model, "vendor": rd("device/vendor"),
+            "rotational": rd("queue/rotational") == "1",
+            "scheduler": rd("queue/scheduler"),
+            "readonly": rd("ro") == "1",
+        })
+    return {"devices": out, "smartctl": bool(shutil.which("smartctl"))}
+
+
+SMART_DEV_RE = re.compile(r"[a-zA-Z0-9]{1,20}")
+
+
+def smart_job(device):
+    if not shutil.which("smartctl"):
+        raise ValueError("smartctl not installed — install the smartmontools "
+                         "package to read drive health")
+    if not SMART_DEV_RE.fullmatch(device or ""):
+        raise ValueError("bad device name")
+    return start_job(["smartctl", "-H", "-A", "/dev/" + device],
+                     f"SMART health for /dev/{device}", privileged=True)
+
+
 def kill_port(port, force=False, pid=None):
     """Stop whatever is listening on `port`.
 
@@ -1117,16 +1313,32 @@ def services():
             return []
         return json.loads(r.stdout or "[]")
 
+    # whether each unit starts at login, so the UI can offer enable/disable
+    enabled = {}
+    r = _run(["systemctl", "--user", "list-unit-files", "--type=service",
+              "--no-pager", "--output=json"],
+             capture_output=True, text=True, timeout=10)
+    if r.returncode == 0:
+        try:
+            for f in json.loads(r.stdout or "[]"):
+                enabled[f.get("unit_file", "")] = f.get("state", "")
+        except ValueError:
+            pass
     user = [{"name": u["unit"], "active": u["active"], "sub": u["sub"],
-             "desc": u["description"]} for u in list_units("--user")]
+             "desc": u["description"],
+             "enabled": enabled.get(u["unit"], "")} for u in list_units("--user")]
     user.sort(key=lambda u: (u["active"] != "active", u["name"]))
     failed = [{"name": u["unit"], "desc": u["description"]}
               for u in list_units("--system", ("--state=failed",))]
     return {"user": user, "failed_system": failed}
 
 
+SVC_ACTIONS = ("start", "stop", "restart", "enable", "disable")
+
+
 def service_action(name, action):
-    if action not in ("start", "stop", "restart") or not SVC_RE.fullmatch(name):
+    """Act on a user unit. enable/disable change whether it starts at login."""
+    if action not in SVC_ACTIONS or not SVC_RE.fullmatch(name):
         raise ValueError("bad service action")
     r = _run(["systemctl", "--user", action, name],
                        capture_output=True, text=True, timeout=30)
@@ -1818,6 +2030,40 @@ def docker_compose_action(project, action):
                      f"compose {action} — {project}")
 
 
+def docker_disk():
+    """`docker system df` — what images/containers/volumes actually cost, so
+    you can see what pruning would reclaim before you prune."""
+    r = _run(["docker", "system", "df", "--format", "{{json .}}"],
+             capture_output=True, text=True, timeout=20)
+    if r.returncode != 0:
+        raise ValueError((r.stderr.strip() or "docker unavailable")[:300])
+    rows = []
+    for line in r.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        rows.append({"type": d.get("Type", ""), "total": d.get("TotalCount", ""),
+                     "active": d.get("Active", ""), "size": d.get("Size", ""),
+                     "reclaimable": d.get("Reclaimable", "")})
+    volumes = []
+    rv = _run(["docker", "volume", "ls", "--format", "{{json .}}"],
+              capture_output=True, text=True, timeout=15)
+    if rv.returncode == 0:
+        for line in rv.stdout.splitlines():
+            if not line.strip():
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            volumes.append({"name": d.get("Name", ""), "driver": d.get("Driver", ""),
+                            "size": d.get("Size", "")})
+    return {"usage": rows, "volumes": volumes[:60]}
+
+
 def docker_prune(kind):
     if kind == "images":
         return start_job(["docker", "image", "prune", "-f"],
@@ -1868,6 +2114,148 @@ def mon_save(new):
             cfg[k]["th"] = float(new[k].get("th", cfg[k]["th"]))
     atomic_write(MON_CFG_FILE, json.dumps(cfg))
     return cfg
+
+
+# ---- custom rules: watch a unit, a port, a process or a folder's size ----
+# The five built-in rules above cover machine-wide metrics; these cover the
+# specific things a given machine is supposed to be doing. They ride the same
+# firing path (cooldown, master switch, channels, history) as everything else.
+
+CUSTOM_FILE = os.path.join(CFG_DIR, "customrules.json")
+CUSTOM_MAX = 24
+CUSTOM_KINDS = ("unit", "port", "process", "path")
+CUSTOM_LABELS = {
+    "unit": "systemd user unit is not running",
+    "port": "nothing is listening on port",
+    "process": "no running process matches",
+    "path": "folder is larger than (GB)",
+}
+
+
+def _custom_clean(r):
+    """Validate one rule, or raise. Returns the stored form."""
+    kind = r.get("kind")
+    if kind not in CUSTOM_KINDS:
+        raise ValueError("unknown rule type")
+    target = str(r.get("target", "")).strip()
+    if not target:
+        raise ValueError("rule needs something to watch")
+    if kind == "unit":
+        if not SVC_RE.fullmatch(target):
+            raise ValueError(f"'{target}' is not a unit name (try foo.service)")
+    elif kind == "port":
+        if not target.isdigit() or not 1 <= int(target) <= 65535:
+            raise ValueError(f"'{target}' is not a port number")
+        target = str(int(target))
+    elif kind == "process":
+        if len(target) > 64:
+            raise ValueError("process pattern is too long")
+    elif kind == "path":
+        target = os.path.realpath(os.path.expanduser(target))
+    value = r.get("value", 0)
+    try:
+        value = float(value or 0)
+    except (TypeError, ValueError):
+        raise ValueError("threshold must be a number")
+    name = str(r.get("name", "")).strip()[:60] or f"{kind}:{target}"
+    return {"name": name, "kind": kind, "target": target, "value": value,
+            "enabled": bool(r.get("enabled", True))}
+
+
+def custom_rules():
+    try:
+        with open(CUSTOM_FILE) as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return []
+    out = []
+    for r in (saved if isinstance(saved, list) else [])[:CUSTOM_MAX]:
+        try:
+            out.append(_custom_clean(r))
+        except ValueError:
+            continue          # drop anything that no longer validates
+    return out
+
+
+def custom_save(rules):
+    if not isinstance(rules, list):
+        raise ValueError("expected a list of rules")
+    if len(rules) > CUSTOM_MAX:
+        raise ValueError(f"at most {CUSTOM_MAX} custom rules")
+    cleaned = [_custom_clean(r) for r in rules]
+    os.makedirs(CFG_DIR, exist_ok=True)
+    atomic_write(CUSTOM_FILE, json.dumps(cleaned))
+    return cleaned
+
+
+def _unit_active(unit):
+    r = _run(["systemctl", "--user", "is-active", unit],
+             capture_output=True, text=True, timeout=8)
+    return r.stdout.strip() == "active"
+
+
+def _port_listening(port):
+    try:
+        for c in psutil.net_connections(kind="inet"):
+            if c.status == "LISTEN" and c.laddr.port == port:
+                return True
+    except psutil.Error:
+        return True           # can't tell — don't cry wolf
+    return False
+
+
+def _process_running(pattern):
+    pat = pattern.lower()
+    for p in psutil.process_iter(["name"]):
+        try:
+            if pat in (p.info["name"] or "").lower():
+                return True
+        except psutil.Error:
+            continue
+    return False
+
+
+def fmt_bytes(n):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if n >= 10 or unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024.0
+
+
+def custom_check(rule):
+    """Return an alert message when the rule is breached, else None."""
+    kind, target = rule["kind"], rule["target"]
+    if kind == "unit":
+        if not _unit_active(target):
+            return f"{rule['name']} — {target} is not running"
+    elif kind == "port":
+        if not _port_listening(int(target)):
+            return f"{rule['name']} — nothing is listening on port {target}"
+    elif kind == "process":
+        if not _process_running(target):
+            return f"{rule['name']} — no process matching '{target}' is running"
+    elif kind == "path":
+        limit = rule["value"]
+        if limit <= 0:
+            return None
+        size = quick_size(target, budget=4)
+        if size > limit * (1024 ** 3):
+            return (f"{rule['name']} — {target} is {fmt_bytes(size)}, "
+                    f"over the {limit:g} GB limit")
+    return None
+
+
+def custom_tick():
+    """Evaluate every enabled custom rule; called once a minute."""
+    for i, rule in enumerate(custom_rules()):
+        if not rule.get("enabled", True):
+            continue
+        try:
+            msg = custom_check(rule)
+        except Exception:  # noqa: BLE001 — one bad rule must not stop the rest
+            continue
+        if msg:
+            _fire(f"custom:{i}:{rule['kind']}:{rule['target']}", msg, None)
 
 
 # ---- alert firing state: breach tracking, per-rule cooldown, master switch ---
@@ -1925,6 +2313,48 @@ def alert_ctl_set(action, minutes=0):
         _mon_breach.clear()
         return alert_ctl()
     raise ValueError("unknown alert action")
+
+
+# ---- home-screen layout, stored server-side so it follows the user ----
+# The browser keeps a localStorage copy as an offline cache; this file is the
+# source of truth, which is what makes the layout survive a different browser.
+
+HOME_LAYOUT_FILE = os.path.join(CFG_DIR, "home.json")
+
+
+def home_layout():
+    try:
+        with open(HOME_LAYOUT_FILE) as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return {"layout": None}
+    return {"layout": saved if isinstance(saved, dict) else None}
+
+
+def home_layout_save(body):
+    """Store {order, hidden, sizes}. Ids are opaque to the server — the widget
+    catalogue lives in the frontend — so we only bound shape and size."""
+    layout = body.get("layout") if isinstance(body, dict) else None
+    if layout is None:
+        try:
+            os.remove(HOME_LAYOUT_FILE)
+        except OSError:
+            pass
+        return {"layout": None}
+    if not isinstance(layout, dict):
+        raise ValueError("layout must be an object")
+    ident = re.compile(r"[\w-]{1,40}")
+    order = [w for w in (layout.get("order") or [])[:120]
+             if isinstance(w, str) and ident.fullmatch(w)]
+    hidden = [w for w in (layout.get("hidden") or [])[:120]
+              if isinstance(w, str) and ident.fullmatch(w)]
+    sizes = {k: v for k, v in (layout.get("sizes") or {}).items()
+             if isinstance(k, str) and ident.fullmatch(k)
+             and v in ("s", "m", "l", "full")}
+    clean = {"order": order, "hidden": hidden, "sizes": sizes}
+    os.makedirs(CFG_DIR, exist_ok=True)
+    atomic_write(HOME_LAYOUT_FILE, json.dumps(clean))
+    return {"layout": clean}
 
 
 def notify(title, msg, critical=True):
@@ -2091,6 +2521,10 @@ def monitor_tick(entry):
                                 "disk": round(worst, 1)}) + "\n")
         _prune_jsonl(MINUTES_FILE, 4000)
         _prune_jsonl(ALERTS_FILE, 1000)
+        # custom rules shell out (systemctl, folder sizing), so once a minute
+        # on the sampler thread rather than on every 2 s tick
+        if not alerts_paused():
+            custom_tick()
 
 
 def _prune_jsonl(path, keep):
@@ -2115,7 +2549,8 @@ def _tail_jsonl(path, n):
 def monitor_state(brief=False):
     """Rules, alerting state and recent alerts. `brief` drops the 24 h history
     (1440 samples) for callers that only want the events — e.g. home widgets."""
-    st = {"cfg": mon_cfg(), "ctl": alert_ctl(),
+    st = {"cfg": mon_cfg(), "ctl": alert_ctl(), "custom": custom_rules(),
+          "custom_kinds": CUSTOM_LABELS,
           "events": list(reversed(_tail_jsonl(ALERTS_FILE, 100)))}
     if not brief:
         st["history"] = _tail_jsonl(MINUTES_FILE, 1440)
@@ -3870,8 +4305,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
 
     def _static(self, rel):
-        rel = rel.replace("..", "").lstrip("/")
-        path = os.path.join(WEB_DIR, "static", rel)
+        # containment by realpath, not by stripping "..": a blocklist has to be
+        # re-proved correct every time the input encoding changes
+        root = os.path.realpath(os.path.join(WEB_DIR, "static"))
+        path = os.path.realpath(os.path.join(root, rel.lstrip("/")))
+        if path != root and not path.startswith(root + os.sep):
+            return self._err("not found", 404)
         if not os.path.isfile(path):
             return self._err("not found", 404)
         with open(path, "rb") as f:
@@ -4070,6 +4509,22 @@ class Handler(BaseHTTPRequestHandler):
                                            qs.get("ns", [""])[0]))
             if route == "/api/alertctl":
                 return self._json(alert_ctl())
+            if route == "/api/firewall":
+                return self._json(firewall_status())
+            if route == "/api/diskhealth":
+                return self._json(disk_health())
+            if route == "/api/dockerdisk":
+                return self._json(docker_disk())
+            if route == "/api/homelayout":
+                return self._json(home_layout())
+            if route == "/api/dupes":
+                return self._json(find_duplicates(
+                    qs.get("path", [""])[0], qs.get("min", ["1"])[0],
+                    qs.get("secs", ["20"])[0]))
+            if route == "/api/oldfiles":
+                return self._json(find_old_large(
+                    qs.get("path", [""])[0], qs.get("min", ["100"])[0],
+                    qs.get("days", ["365"])[0], qs.get("secs", ["20"])[0]))
             return self._err("not found", 404)
         except Exception as e:  # noqa: BLE001 — surfaced to the UI
             return self._err(e)
@@ -4237,6 +4692,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True,
                                    "ctl": alert_ctl_set(body.get("action", ""),
                                                         body.get("minutes", 0))})
+            if route == "/api/customrules":
+                return self._json({"ok": True,
+                                   "rules": custom_save(body.get("rules", []))})
+            if route == "/api/homelayout":
+                return self._json(home_layout_save(body))
+            if route == "/api/firewallrules":
+                return self._json(firewall_rules_job())
+            if route == "/api/smart":
+                return self._json(smart_job(body.get("device", "")))
             if route == "/api/health":
                 return self._json(health_report())
             return self._err("not found", 404)

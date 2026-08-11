@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.4.0
+
+- **Custom alert rules** — the five built-in thresholds only covered
+  machine-wide metrics. You can now add your own rules for the specific things
+  a machine is supposed to be doing: a **systemd user unit that stopped
+  running**, a **port nothing is listening on**, a **process that vanished**,
+  or a **folder that grew past a size limit**. They're checked once a minute
+  and ride the same path as everything else — channels, per-rule cooldown, the
+  master switch and the alert history. Stored in
+  `~/.config/perch/customrules.json`.
+- **Firewall status** on the Network tab, next to the ports it applies to.
+  Reading the live rule set needs root on every firewall tool, so the status
+  (service state, and ufw's own enabled flag) is read without privileges and
+  **Show rules** dumps the real rule set through `pkexec`. If ufw is installed
+  but not enabled, Perch says so — that combination is easy to miss.
+- **Drive health** on the Storage tab: physical devices with model, size and
+  SSD/spinning type read from `/sys/block`, plus a **SMART check** per device
+  via `pkexec smartctl` (with a pointer to install `smartmontools` when it's
+  missing).
+- **Docker disk usage** — `docker system df` broken out by images, containers,
+  volumes and build cache, with what's reclaimable, so you can see what a prune
+  would actually free before running one. Volumes are listed too.
+- **Two new cleanup lenses** in Clean up: a **duplicate finder** (compares size,
+  then a 64 KB fingerprint, then the whole file, so only real candidates are
+  read in full) and **big files you haven't opened in a long time**. Both scan
+  a folder you choose under a time budget and say when they stopped early;
+  neither deletes anything for you.
+- **Start services at login** — the services table gained enable/disable
+  alongside start/stop/restart, and shows which units are set to start at
+  login.
+- **Your home-screen layout now follows you.** It's stored server-side in
+  `~/.config/perch/home.json`, so a different browser or machine gets the same
+  home screen; the browser copy stays as an offline cache. **Export** and
+  **Import** buttons in Customize home move a layout between installs.
+- **Frontend smoke tests.** CI previously checked `app.js` only for syntax. A
+  new suite drives the real app in headless Chrome — boot, live data, the
+  widget gallery, layout persistence across a reload, the alerting switch,
+  custom rules, port filtering, and every tab opening without a console error.
+  Run locally with `make test-frontend`.
+- Static file serving now proves containment with `realpath` instead of
+  stripping `..` from the request path — a blocklist that has to be re-proved
+  correct every time input encoding changes.
+
 ## 1.3.0
 
 - **A fully customizable home screen** — every item on Overview, the stat tiles

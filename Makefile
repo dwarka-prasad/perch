@@ -1,7 +1,14 @@
-.PHONY: run desktop dev deb docker docker-up install-user uninstall-user clean
+.PHONY: run desktop dev deb docker docker-up install-user uninstall-user clean \
+        test test-frontend
 
 run:            ## run the server in the foreground
 	PYTHONPATH=src python3 -m perch
+
+test:           ## unit + HTTP smoke tests
+	python3 -m unittest discover -s tests -v
+
+test-frontend:  ## drive the real app in headless Chrome
+	node tests/frontend/smoke.mjs
 
 desktop:        ## run the native desktop window
 	PYTHONPATH=src python3 -m perch.desktop
