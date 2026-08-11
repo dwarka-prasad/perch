@@ -72,13 +72,13 @@ step, no cloud.
   port nothing is listening on, a process that vanished, or a folder that grew
   past a size limit.
 
-  ![Monitor — the alerting master switch with snooze buttons, above the threshold rules](docs/monitor-alerts.png)
+  ![Monitor — the alerting master switch with snooze buttons, the threshold rules, and custom rules watching a specific unit, port, process or folder](docs/monitor-alerts.png)
 
 - **Processes / Users / Logs / Kernel / Updates** — kill processes, inspect
   any process in a detail modal, browse the journal live, read kernel
   tunables, and see pending APT updates with a sidebar badge.
 
-![Tab tour — Overview, Monitor alerts & 24 h history, Storage analyzer, developer Tools, and desktop Settings](docs/tour.gif)
+![Tab tour — Overview, Monitor alerts, installed packages, Network ports & firewall, Storage, and Settings](docs/tour.gif)
 
 ### Manage storage & files
 - **Storage** — disk usage plus a folder-size analyzer to find what's eating
@@ -146,6 +146,8 @@ step, no cloud.
   CLI (default, no API key), the Anthropic API, any OpenAI-compatible
   endpoint, or a local Ollama model — configured in Settings.
 
+  ![Assistant — a floating button opens the chat as a dock over the current page](docs/assistant.png)
+
 ### Control the desktop
 - **Settings** — brightness, volume, power profile, blank/suspend timers,
   night light, Do Not Disturb, Bluetooth, Wi-Fi, GNOME theme, wallpaper (and
@@ -165,6 +167,9 @@ step, no cloud.
   sortable, an *only updatable* toggle, and per-package **Update** and
   **Remove**. A system password dialog (`pkexec`) appears for privileged
   actions and the live output streams into the job box.
+
+  ![Packages — everything installed, with version, size, description and per-package Update and Remove](docs/packages.png)
+
 - **About & self-update** — Settings shows the running version (also next to
   the name in the sidebar), how this copy was installed, where it lives and
   which directories it uses. **Check for updates** asks GitHub for the newest
