@@ -35,10 +35,20 @@
   watched it, so a backup that quietly stopped working stayed quiet.
 - **`?` opens a keyboard shortcut sheet**, for the shortcuts the app had
   quietly accumulated (Ctrl+K, Ctrl+I, the terminal's Ctrl+Shift+ family).
-- The frontend is now five ordered scripts instead of one 3900-line file, with
-  no build step: they concatenate byte-for-byte back to the original and share
-  one global scope, so execution is identical rather than merely equivalent.
-- Frontend smoke tests grew from 15 to **25 checks**, now covering the file
+- **Home widgets resize by dragging their corner**, in both directions — width
+  in grid columns, height in rows — instead of a button cycling four presets.
+  Drag-and-drop is grid-aware now too: it drops next to the widget whose centre
+  is nearest the pointer and shows where, rather than guessing from the first
+  element below and to the right.
+- **The codebase is a package, not one file.** The backend split into
+  `paths`, `util`, `jobs`, `packages`, `containers`, `history` and `fleet`, with
+  dependencies pointing one way and `server.py` re-exporting every name so
+  nothing external breaks. Cross-module calls go through the module object, so
+  there is one canonical place to patch each helper. The frontend is five
+  ordered scripts instead of one 3900-line file, still with no build step: they
+  concatenate byte-for-byte back to the original and share one global scope, so
+  execution is identical rather than merely equivalent.
+- Frontend smoke tests grew from 15 to **26 checks**, now covering the file
   browser, terminal, API client and database browser — the riskiest surfaces
   that had no coverage at all.
 

@@ -20,6 +20,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from http.server import ThreadingHTTPServer  # noqa: E402
 from perch import server as S  # noqa: E402
+# helpers live in their own modules now; patch them where they are defined so
+# every caller sees the patch, not just the one that re-exported the name
+from perch import containers as C  # noqa: E402,F401
+from perch import jobs as J  # noqa: E402,F401
+from perch import packages as P  # noqa: E402
+from perch import util as U  # noqa: E402
 
 
 class AtomicWrite(unittest.TestCase):
@@ -288,13 +294,13 @@ class ContainerNormalise(unittest.TestCase):
 
 class ContainerPs(unittest.TestCase):
     def _with(self, stdout, rc=0):
-        orig = S._run
-        S._run = lambda cmd, **kw: __import__("subprocess").CompletedProcess(
+        orig = U._run
+        U._run = lambda cmd, **kw: __import__("subprocess").CompletedProcess(
             cmd, rc, stdout, "boom" if rc else "")
         try:
             return S._ctr_ps("podman")
         finally:
-            S._run = orig
+            U._run = orig
 
     def test_json_lines(self):
         out = ('{"ID":"a1","Names":"one","Image":"i","State":"running"}\n'
@@ -332,13 +338,13 @@ class LxdAndK8sShapes(unittest.TestCase):
                                        {"family": "inet", "address": "10.0.0.5"},
                                        {"family": "inet6", "address": "fe80::1"}]}}},
              "config": {"image.description": "ubuntu 24.04"}}])
-        orig_run, orig_which = S._run, S.shutil.which
-        S._run = self._stub(rows)
-        S.shutil.which = lambda b: "/usr/bin/" + b if b == "incus" else None
+        orig_run, orig_which = U._run, C.shutil.which
+        U._run = self._stub(rows)
+        C.shutil.which = lambda b: "/usr/bin/" + b if b == "incus" else None
         try:
             out = S._lxd_containers()
         finally:
-            S._run, S.shutil.which = orig_run, orig_which
+            U._run, C.shutil.which = orig_run, orig_which
         self.assertEqual(out["engine"], "incus")
         self.assertEqual(out["containers"][0]["state"], "stopped")
         self.assertEqual(out["containers"][0]["ports"], "")
@@ -352,50 +358,50 @@ class LxdAndK8sShapes(unittest.TestCase):
              "status": {"phase": "Pending", "podIP": None,
                         "containerStatuses": None},
              "spec": None}]})
-        orig_run, orig_which = S._run, S.shutil.which
-        S._run = lambda cmd, **kw: __import__("subprocess").CompletedProcess(
+        orig_run, orig_which = U._run, C.shutil.which
+        U._run = lambda cmd, **kw: __import__("subprocess").CompletedProcess(
             cmd, 0, "ctx" if cmd[1] == "config" else payload, "")
-        S.shutil.which = lambda b: "/usr/bin/kubectl"
+        C.shutil.which = lambda b: "/usr/bin/kubectl"
         try:
             out = S._k8s_pods()
         finally:
-            S._run, S.shutil.which = orig_run, orig_which
+            U._run, C.shutil.which = orig_run, orig_which
         self.assertEqual(out["pods"][0]["ready"], "0/0")
         self.assertEqual(out["pods"][0]["restarts"], 0)
         self.assertEqual(out["pods"][0]["node"], "")
 
     def test_k8s_unreachable_cluster_reports_error(self):
-        orig_run, orig_which = S._run, S.shutil.which
-        S._run = lambda cmd, **kw: __import__("subprocess").CompletedProcess(
+        orig_run, orig_which = U._run, C.shutil.which
+        U._run = lambda cmd, **kw: __import__("subprocess").CompletedProcess(
             cmd, 0 if cmd[1] == "config" else 1, "ctx",
             "" if cmd[1] == "config" else "dial tcp: connection refused")
-        S.shutil.which = lambda b: "/usr/bin/kubectl"
+        C.shutil.which = lambda b: "/usr/bin/kubectl"
         try:
             out = S._k8s_pods()
         finally:
-            S._run, S.shutil.which = orig_run, orig_which
+            U._run, C.shutil.which = orig_run, orig_which
         self.assertEqual(out["pods"], [])
         self.assertIn("connection refused", out["error"])
 
     def test_no_kubectl_means_no_k8s_section(self):
-        orig_which = S.shutil.which
-        S.shutil.which = lambda b: None
+        orig_which = C.shutil.which
+        C.shutil.which = lambda b: None
         try:
             self.assertIsNone(S._k8s_pods())
         finally:
-            S.shutil.which = orig_which
+            C.shutil.which = orig_which
 
 
 class ContainerActionValidation(unittest.TestCase):
     def setUp(self):
         self.calls = []
-        self._orig = S._run
-        S._run = lambda cmd, **kw: (
+        self._orig = U._run
+        U._run = lambda cmd, **kw: (
             self.calls.append(cmd),
             __import__("subprocess").CompletedProcess(cmd, 0, "ok", ""))[1]
 
     def tearDown(self):
-        S._run = self._orig
+        U._run = self._orig
 
     def test_rejects_unknown_engine(self):
         with self.assertRaises(ValueError):
@@ -683,14 +689,14 @@ class InstalledPackages(unittest.TestCase):
            "zlib1g\t1.2.11\t164\tcompression library\n")
 
     def _listing(self, **kw):
-        orig_for, orig_upd = S._installed_for, S.pkg_updates
-        S._installed_for = lambda mgr: S._rows_from(
+        orig_for, orig_upd = P._installed_for, P.pkg_updates
+        P._installed_for = lambda mgr: P._rows_from(
             self.APT, ("name", "version", "size", "summary"), sizes_in_kb=True)
-        S.pkg_updates = lambda *a, **k: {"packages": [{"name": "acl"}]}
+        P.pkg_updates = lambda *a, **k: {"packages": [{"name": "acl"}]}
         try:
             return S.installed_packages(**kw)
         finally:
-            S._installed_for, S.pkg_updates = orig_for, orig_upd
+            P._installed_for, P.pkg_updates = orig_for, orig_upd
 
     def test_parses_versions_and_sizes(self):
         r = self._listing()
@@ -737,12 +743,12 @@ class InstalledPackages(unittest.TestCase):
 class PkgActionRouting(unittest.TestCase):
     def setUp(self):
         self.jobs = []
-        self._orig = S.start_job
-        S.start_job = lambda argv, title, privileged=False: (
+        self._orig = J.start_job
+        J.start_job = lambda argv, title, privileged=False: (
             self.jobs.append((argv, privileged)), {"id": "x"})[1]
 
     def tearDown(self):
-        S.start_job = self._orig
+        J.start_job = self._orig
 
     def test_update_and_remove_route_per_manager(self):
         if not S._PM:

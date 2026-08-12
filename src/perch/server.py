@@ -16,7 +16,6 @@ import re
 import secrets
 import select
 import shutil
-import socket
 import stat
 import struct
 import subprocess
@@ -39,8 +38,38 @@ except ImportError:  # self-install the only external dependency
 
 try:
     from .config import VERSION
+    # re-exported so `from perch import server` keeps exposing the helpers
+    from .util import (_SUBPROC_TIMEOUT, _get, _http_post_json,  # noqa: F401
+                       _prune_jsonl, _run, _sd_notify, _sh_quote, _sp_run,
+                       _tail_jsonl, atomic_write, fmt_bytes)
+    from .util import UA  # noqa: F401
+    from .jobs import JOBS, job_status, start_job  # noqa: F401
+    from .history import (HISTORY_CSV_COLS, HISTORY_RANGES,  # noqa: F401
+                          HOURLY_FILE, HOURLY_KEEP, _roll_hour, history_csv,
+                          history_series)
+    from .history import MINUTES_FILE  # noqa: F401
+    from .packages import (_HAS_FLATPAK, _HAS_SNAP, _PM,  # noqa: F401
+                           _PM_INSTALL, _PM_REMOVE, _PM_SEARCH,
+                           _PM_UPDATE_ONE, _PM_UPGRADE, _installed_for,
+                           _installed_native, _native_pm, _parse_pm_search,
+                           _parse_updates, _rows_from, _upd_cache,
+                           installed_packages, pkg_install, pkg_search,
+                           pkg_updates, upgrade_all)
+    from .fleet import (FLEET_FILE, FLEET_MAX, FLEET_TIMEOUT,  # noqa: F401
+                        _fleet_clean, _fleet_poll, fleet_cfg, fleet_public,
+                        fleet_save, fleet_status)
+    from .containers import (CTR_ACTIONS, CTR_ENGINES,  # noqa: F401
+                             CTR_ID_RE, DOCKER_ACTIONS, K8S_NAME_RE,
+                             _ctr_norm, _ctr_ports, _ctr_ps, _ctr_version,
+                             _docker_json, _k8s_pods, _lxd_containers,
+                             container_envs, ctr_action, ctr_logs,
+                             docker_action, docker_compose_action,
+                             docker_compose_projects, docker_disk, docker_info,
+                             docker_logs, docker_prune, docker_stats,
+                             pg_containers)
 except ImportError:      # loaded as a plain file rather than as a package
     VERSION = "0.0.0"
+    raise
 
 PORT = int(os.environ.get("PERCH_PORT") or
            (sys.argv[1] if len(sys.argv) > 1 and sys.argv[1].isdigit()
@@ -49,42 +78,12 @@ HOST = os.environ.get("PERCH_HOST", "127.0.0.1")
 HOME = os.path.expanduser("~")
 TOKEN_FILE = os.path.join(HOME, ".perch-token")
 
-_SUBPROC_TIMEOUT = 15
-_sp_run = subprocess.run
 
 
-def _run(cmd, **kw):
-    """subprocess.run with a default timeout so no request can hang."""
-    kw.setdefault("timeout", _SUBPROC_TIMEOUT)
-    try:
-        return _sp_run(cmd, **kw)
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(cmd, 124, "", "command timed out")
 
 
-def atomic_write(path, text, mode=0o600):
-    """Write text to path via a temp file + rename, so a crash mid-write
-    never leaves a truncated/corrupt file behind."""
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(text)
-    os.chmod(tmp, mode)
-    os.replace(tmp, path)
 
 
-def _sd_notify(msg):
-    """Tell systemd we're alive (Type=notify + WatchdogSec)."""
-    addr = os.environ.get("NOTIFY_SOCKET")
-    if not addr:
-        return
-    if addr.startswith("@"):
-        addr = "\0" + addr[1:]
-    try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        s.sendto(msg.encode(), addr)
-        s.close()
-    except OSError:
-        pass
 
 
 # failed-auth lockout: 20 bad tokens in 10 min locks that address out
@@ -1204,232 +1203,34 @@ def kill_port(port, force=False, pid=None):
                      "(root-owned listeners can't be ended from here)")
 
 
-# ---------------------------------------------------------------- docker -----
 
 
-def _docker_json(args, timeout=10):
-    r = _run(["docker", *args], capture_output=True, text=True,
-                       timeout=timeout)
-    if r.returncode != 0:
-        raise ValueError((r.stderr.strip() or "docker unavailable")[:300])
-    return [json.loads(line) for line in r.stdout.splitlines() if line.strip()]
 
 
-def docker_info():
-    containers = [{"id": c["ID"], "name": c["Names"], "image": c["Image"],
-                   "state": c["State"], "status": c["Status"],
-                   "ports": c.get("Ports", "")}
-                  for c in _docker_json(["ps", "-a", "--format", "{{json .}}"])]
-    images = [{"repo": i["Repository"], "tag": i["Tag"], "size": i["Size"],
-               "id": i["ID"]}
-              for i in _docker_json(["images", "--format", "{{json .}}"])][:20]
-    return {"containers": containers, "images": images}
 
 
-DOCKER_ACTIONS = {"start", "stop", "restart", "rm"}
 
 
-def docker_action(cid, action):
-    if action not in DOCKER_ACTIONS or not re.fullmatch(r"[0-9a-f]{4,64}", cid):
-        raise ValueError("bad docker action")
-    r = _run(["docker", action, cid], capture_output=True, text=True,
-                       timeout=60)
-    if r.returncode != 0:
-        raise ValueError(r.stderr.strip()[:300])
-    return r.stdout.strip()
 
 
-def docker_logs(cid):
-    if not re.fullmatch(r"[0-9a-f]{4,64}", cid):
-        raise ValueError("bad container id")
-    r = _run(["docker", "logs", "--tail", "150", cid],
-                       capture_output=True, text=True, timeout=15)
-    return {"logs": (r.stdout + r.stderr)[-20000:]}
 
 
-# ------------------------------------------------- other container engines ---
-# Docker is handled above; this section detects whatever *else* is installed
-# (Podman, nerdctl, LXD, Kubernetes) and lists its containers/pods with the
-# same shape, so the Dev tab can render them all through one code path.
-
-CTR_ENGINES = ("docker", "podman", "nerdctl")
-CTR_ACTIONS = {"start", "stop", "restart", "rm"}
-CTR_ID_RE = re.compile(r"[0-9a-zA-Z][\w.-]{0,63}")
-K8S_NAME_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}")
 
 
-def _ctr_ports(ports):
-    """Normalise a ports field: docker gives a string, podman a list."""
-    if not isinstance(ports, list):
-        return str(ports or "")
-    out = []
-    for p in ports:
-        if not isinstance(p, dict):
-            out.append(str(p))
-            continue
-        host = p.get("host_port") or p.get("hostPort") or ""
-        cont = p.get("container_port") or p.get("containerPort") or ""
-        proto = p.get("protocol") or "tcp"
-        out.append(f"{host}->{cont}/{proto}" if host else f"{cont}/{proto}")
-    return ", ".join(str(x) for x in out)
 
 
-def _ctr_norm(c):
-    names = c.get("Names") or c.get("Name") or ""
-    if isinstance(names, list):
-        names = ", ".join(names)
-    state = str(c.get("State") or "").lower()
-    status = c.get("Status") or ""
-    if state in ("", "unknown"):
-        state = "running" if str(status).lower().startswith("up") else state
-    return {"id": str(c.get("ID") or c.get("Id") or "")[:64],
-            "name": names, "image": c.get("Image") or "",
-            "state": state, "status": str(status),
-            "ports": _ctr_ports(c.get("Ports"))}
 
 
-def _ctr_ps(engine):
-    """`<engine> ps -a` as a normalised list.
-
-    Docker/nerdctl honour the Go template and emit one JSON object per line;
-    Podman ignores it and emits a single JSON array — both are accepted.
-    """
-    r = _run([engine, "ps", "-a", "--format", "{{json .}}"],
-             capture_output=True, text=True, timeout=12)
-    if r.returncode != 0:
-        raise ValueError((r.stderr.strip() or engine + " unavailable")[:300])
-    text = (r.stdout or "").strip()
-    if not text:
-        return []
-    rows = (json.loads(text) if text[0] == "["
-            else [json.loads(x) for x in text.splitlines() if x.strip()])
-    return [_ctr_norm(c) for c in rows][:200]
 
 
-def _ctr_version(engine):
-    r = _run([engine, "--version"], capture_output=True, text=True, timeout=8)
-    lines = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()
-    return lines[0][:60] if lines else ""
 
 
-def _lxd_containers():
-    """LXD/Incus instances, if that client is installed and talking to a daemon."""
-    for binary in ("incus", "lxc"):
-        if not shutil.which(binary):
-            continue
-        r = _run([binary, "list", "--format", "json"],
-                 capture_output=True, text=True, timeout=12)
-        if r.returncode != 0 or not (r.stdout or "").strip():
-            continue
-        try:
-            rows = json.loads(r.stdout)
-        except ValueError:
-            continue
-        out = []
-        for i in rows[:200]:
-            # a stopped instance reports "state": null, so `or {}` at every hop
-            net = (i.get("state") or {}).get("network") or {}
-            ips = [a["address"] for iface, d in net.items() if iface != "lo"
-                   for a in (d.get("addresses") or [])
-                   if a.get("family") == "inet"]
-            out.append({"id": i.get("name", ""), "name": i.get("name", ""),
-                        "image": ((i.get("config") or {})
-                                  .get("image.description") or "")[:60],
-                        "state": str(i.get("status", "")).lower(),
-                        "status": i.get("status", ""), "ports": ", ".join(ips)})
-        return {"engine": binary, "kind": "lxd", "version": _ctr_version(binary),
-                "containers": out, "error": None}
-    return None
 
 
-def _k8s_pods():
-    """Pods from the current kubectl context, or None when there isn't one."""
-    if not shutil.which("kubectl"):
-        return None
-    r = _run(["kubectl", "config", "current-context"],
-             capture_output=True, text=True, timeout=6)
-    if r.returncode != 0:
-        return None
-    ctx = r.stdout.strip()
-    # --request-timeout keeps an unreachable cluster from stalling the panel
-    r = _run(["kubectl", "get", "pods", "--all-namespaces", "-o", "json",
-              "--request-timeout=8s"], capture_output=True, text=True,
-             timeout=20)
-    if r.returncode != 0:
-        return {"context": ctx, "pods": [],
-                "error": (r.stderr.strip() or "cluster unreachable")[:300]}
-    try:
-        items = json.loads(r.stdout or "{}").get("items", [])
-    except ValueError:
-        return {"context": ctx, "pods": [], "error": "unreadable kubectl output"}
-    pods = []
-    for it in items[:300]:
-        md, st = it.get("metadata") or {}, it.get("status") or {}
-        cs = st.get("containerStatuses") or []
-        pods.append({"ns": md.get("namespace", ""), "name": md.get("name", ""),
-                     "phase": st.get("phase", ""),
-                     "ready": f"{sum(1 for c in cs if c.get('ready'))}/{len(cs)}",
-                     "restarts": sum(c.get("restartCount") or 0 for c in cs),
-                     "node": (it.get("spec") or {}).get("nodeName", ""),
-                     "ip": st.get("podIP") or ""})
-    pods.sort(key=lambda p: (p["ns"], p["name"]))
-    return {"context": ctx, "pods": pods, "error": None}
 
 
-def container_envs():
-    """Every container environment present on this machine, Docker included."""
-    envs = []
-    for engine in CTR_ENGINES:
-        if not shutil.which(engine):
-            continue
-        env = {"engine": engine, "kind": "container",
-               "version": _ctr_version(engine), "containers": [], "error": None}
-        try:
-            env["containers"] = _ctr_ps(engine)
-        except Exception as e:  # noqa: BLE001 — one dead engine must not hide the rest
-            env["error"] = str(e)[:300]
-        envs.append(env)
-    # one flaky/odd-shaped environment must not take the whole panel down
-    try:
-        lxd = _lxd_containers()
-        if lxd:
-            envs.append(lxd)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        k8s = _k8s_pods()
-    except Exception:  # noqa: BLE001
-        k8s = None
-    return {"envs": envs, "k8s": k8s}
 
 
-def ctr_action(engine, cid, action):
-    if engine not in CTR_ENGINES or action not in CTR_ACTIONS:
-        raise ValueError("bad container action")
-    if not CTR_ID_RE.fullmatch(cid or ""):
-        raise ValueError("bad container id")
-    r = _run([engine, action, cid], capture_output=True, text=True, timeout=60)
-    if r.returncode != 0:
-        raise ValueError((r.stderr.strip() or "command failed")[:300])
-    return r.stdout.strip()
-
-
-def ctr_logs(engine, cid, ns=""):
-    """Recent log lines from a container (docker/podman/nerdctl) or a k8s pod."""
-    if engine == "k8s":
-        if not (K8S_NAME_RE.fullmatch(cid or "")
-                and K8S_NAME_RE.fullmatch(ns or "")):
-            raise ValueError("bad pod name")
-        cmd = ["kubectl", "logs", "-n", ns, cid, "--tail", "150",
-               "--all-containers=true"]
-    else:
-        if engine not in CTR_ENGINES:
-            raise ValueError("unknown container engine")
-        if not CTR_ID_RE.fullmatch(cid or ""):
-            raise ValueError("bad container id")
-        cmd = [engine, "logs", "--tail", "150", cid]
-    r = _run(cmd, capture_output=True, text=True, timeout=20)
-    return {"logs": (r.stdout + r.stderr)[-20000:]}
 
 
 # -------------------------------------------------------------- services -----
@@ -1873,19 +1674,6 @@ def llm_save(body):
     return llm_public()
 
 
-def _http_post_json(url, headers, payload, timeout=240):
-    import urllib.request as ur
-    data = json.dumps(payload).encode()
-    req = ur.Request(url, data=data, method="POST",
-                     headers={"Content-Type": "application/json", **headers})
-    try:
-        with ur.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")[:300]
-        raise ValueError(f"provider HTTP {e.code}: {detail}")
-    except Exception as e:  # noqa: BLE001
-        raise ValueError(f"provider request failed: {e}")
 
 
 def _provider_chat(cfg, system, messages, max_tokens=1024):
@@ -2112,99 +1900,14 @@ def project_run(path, kind, name):
                      f"{match['cmd']} — {os.path.basename(path)}")
 
 
-# ---------------------------------------------------- docker (extended) ------
 
 
-def docker_stats():
-    r = _run(["docker", "stats", "--no-stream", "--format",
-                        "{{json .}}"], capture_output=True, text=True,
-                       timeout=15)
-    rows = []
-    for line in r.stdout.splitlines():
-        try:
-            c = json.loads(line)
-            rows.append({"name": c.get("Name"), "cpu": c.get("CPUPerc"),
-                         "mem": c.get("MemPerc"), "memuse": c.get("MemUsage"),
-                         "net": c.get("NetIO"), "block": c.get("BlockIO")})
-        except json.JSONDecodeError:
-            continue
-    return {"stats": rows}
 
 
-def docker_compose_projects():
-    r = _run(["docker", "ps", "-a", "--format", "{{json .}}"],
-                       capture_output=True, text=True, timeout=10)
-    projects = {}
-    for line in r.stdout.splitlines():
-        try:
-            c = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        labels = c.get("Labels", "")
-        proj = None
-        for kv in labels.split(","):
-            if kv.startswith("com.docker.compose.project="):
-                proj = kv.split("=", 1)[1]
-        if not proj:
-            continue
-        p = projects.setdefault(proj, {"name": proj, "running": 0, "total": 0})
-        p["total"] += 1
-        if c.get("State") == "running":
-            p["running"] += 1
-    return {"projects": sorted(projects.values(), key=lambda x: x["name"])}
 
 
-def docker_compose_action(project, action):
-    if action not in ("up", "down", "restart") \
-            or not re.fullmatch(r"[\w.-]+", project or ""):
-        raise ValueError("bad compose action")
-    sub = {"up": ["up", "-d"], "down": ["down"], "restart": ["restart"]}[action]
-    return start_job(["docker", "compose", "-p", project, *sub],
-                     f"compose {action} — {project}")
 
 
-def docker_disk():
-    """`docker system df` — what images/containers/volumes actually cost, so
-    you can see what pruning would reclaim before you prune."""
-    r = _run(["docker", "system", "df", "--format", "{{json .}}"],
-             capture_output=True, text=True, timeout=20)
-    if r.returncode != 0:
-        raise ValueError((r.stderr.strip() or "docker unavailable")[:300])
-    rows = []
-    for line in r.stdout.splitlines():
-        if not line.strip():
-            continue
-        try:
-            d = json.loads(line)
-        except ValueError:
-            continue
-        rows.append({"type": d.get("Type", ""), "total": d.get("TotalCount", ""),
-                     "active": d.get("Active", ""), "size": d.get("Size", ""),
-                     "reclaimable": d.get("Reclaimable", "")})
-    volumes = []
-    rv = _run(["docker", "volume", "ls", "--format", "{{json .}}"],
-              capture_output=True, text=True, timeout=15)
-    if rv.returncode == 0:
-        for line in rv.stdout.splitlines():
-            if not line.strip():
-                continue
-            try:
-                d = json.loads(line)
-            except ValueError:
-                continue
-            volumes.append({"name": d.get("Name", ""), "driver": d.get("Driver", ""),
-                            "size": d.get("Size", "")})
-    return {"usage": rows, "volumes": volumes[:60]}
-
-
-def docker_prune(kind):
-    if kind == "images":
-        return start_job(["docker", "image", "prune", "-f"],
-                         "Prune dangling images")
-    if kind == "system":
-        return start_job(["docker", "system", "prune", "-f"],
-                         "Prune stopped containers, networks, dangling images")
-    raise ValueError("bad prune kind")
 
 
 # --------------------------------------------------------------- monitor -----
@@ -2213,7 +1916,6 @@ CFG_DIR = os.path.join(HOME, ".config/perch")
 MON_CFG_FILE = os.path.join(CFG_DIR, "monitor.json")
 MON_DIR = os.path.join(HOME, ".cache/perch")
 ALERTS_FILE = os.path.join(MON_DIR, "alerts.jsonl")
-MINUTES_FILE = os.path.join(MON_DIR, "history.jsonl")
 
 MON_DEFAULTS = {
     "cpu": {"on": True, "th": 90, "label": "CPU above % (sustained 60 s)"},
@@ -2351,11 +2053,6 @@ def _process_running(pattern):
     return False
 
 
-def fmt_bytes(n):
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024 or unit == "TB":
-            return f"{n:.0f} {unit}" if n >= 10 or unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024.0
 
 
 def custom_check(rule):
@@ -2832,109 +2529,18 @@ def monitor_tick(entry):
             pass
 
 
-# ---- long-term history: hourly rollups of the minute samples ----
-# Minute samples answer "what is happening"; they are pruned after a few days.
-# Rolling each finished hour into one row answers "is this normal for a
-# Tuesday", which is the question an alert on its own can never settle.
-
-HOURLY_FILE = os.path.join(MON_DIR, "history-hourly.jsonl")
-HOURLY_KEEP = 24 * 120                      # ~120 days
-HISTORY_RANGES = {"24h": 86400, "7d": 7 * 86400,
-                  "30d": 30 * 86400, "90d": 90 * 86400}
 
 
-def _roll_hour(now):
-    """Roll every finished hour the minute file still covers and that hasn't
-    been rolled yet. Written as a catch-up rather than "roll the last hour" so
-    it backfills on first run and after the machine has been off."""
-    hour = int(now // 3600) * 3600
-    done = set()
-    try:
-        with open(HOURLY_FILE) as f:
-            for line in f:
-                try:
-                    done.add(json.loads(line).get("t"))
-                except ValueError:
-                    continue
-    except OSError:
-        pass
-    buckets = {}
-    for r in _tail_jsonl(MINUTES_FILE, 6000):
-        t = r.get("t", 0)
-        bucket = int(t // 3600) * 3600
-        if bucket >= hour or bucket in done:
-            continue                        # current hour, or already rolled
-        buckets.setdefault(bucket, []).append(r)
-    if not buckets:
-        return
-
-    def agg(rows, key, how):
-        vals = [r[key] for r in rows if r.get(key) is not None]
-        if not vals:
-            return None
-        return (round(sum(vals) / len(vals), 1) if how == "avg"
-                else round(max(vals), 1))
-
-    os.makedirs(MON_DIR, exist_ok=True)
-    with open(HOURLY_FILE, "a") as f:
-        for bucket in sorted(buckets):
-            rows = buckets[bucket]
-            f.write(json.dumps({
-                "t": bucket, "n": len(rows),
-                "cpu": agg(rows, "cpu", "avg"), "cpu_max": agg(rows, "cpu", "max"),
-                "mem": agg(rows, "mem", "avg"), "mem_max": agg(rows, "mem", "max"),
-                "temp": agg(rows, "temp", "max"), "disk": agg(rows, "disk", "max"),
-                "batt": agg(rows, "batt", "avg")}) + "\n")
-    _prune_jsonl(HOURLY_FILE, HOURLY_KEEP)
 
 
-def history_series(rng="24h"):
-    """Minute resolution for a day, hourly beyond it — same row shape either way."""
-    span = HISTORY_RANGES.get(rng, 86400)
-    cutoff = time.time() - span
-    if span <= 86400:
-        rows = [r for r in _tail_jsonl(MINUTES_FILE, 1600)
-                if r.get("t", 0) >= cutoff]
-        return {"range": rng, "resolution": "minute", "rows": rows}
-    rows = [r for r in _tail_jsonl(HOURLY_FILE, HOURLY_KEEP)
-            if r.get("t", 0) >= cutoff]
-    return {"range": rng, "resolution": "hour", "rows": rows}
 
 
-HISTORY_CSV_COLS = ("t", "cpu", "cpu_max", "mem", "mem_max", "temp", "disk",
-                    "batt")
 
 
-def history_csv(rng="24h"):
-    import datetime
-    data = history_series(rng)
-    out = ["time," + ",".join(HISTORY_CSV_COLS[1:])]
-    for r in data["rows"]:
-        stamp = datetime.datetime.fromtimestamp(r.get("t", 0)).isoformat(
-            timespec="seconds")
-        out.append(stamp + "," + ",".join(
-            "" if r.get(c) is None else str(r.get(c))
-            for c in HISTORY_CSV_COLS[1:]))
-    return "\n".join(out) + "\n"
 
 
-def _prune_jsonl(path, keep):
-    try:
-        with open(path) as f:
-            lines = f.readlines()
-        if len(lines) > keep * 1.25:
-            with open(path, "w") as f:
-                f.writelines(lines[-keep:])
-    except OSError:
-        pass
 
 
-def _tail_jsonl(path, n):
-    try:
-        with open(path) as f:
-            return [json.loads(x) for x in f.readlines()[-n:]]
-    except (OSError, ValueError):
-        return []
 
 
 def monitor_state(brief=False):
@@ -3128,78 +2734,17 @@ def http_request(method, url, headers_text="", body="", timeout=20):
             "curl": " ".join(curl)}
 
 
-# ------------------------------------------------- updates / net extras ------
-
-_upd_cache = {"t": 0.0, "data": None}
 
 
-def _parse_updates(pm, out):
-    pkgs = []
-    if pm == "apt":
-        for line in out.splitlines():
-            m = re.match(r"^([^/]+)/(\S+)\s+(\S+)\s+\S+\s+\[upgradable from: "
-                         r"(.+)\]", line)
-            if m:
-                pkgs.append({"name": m.group(1), "repo": m.group(2),
-                             "new": m.group(3), "old": m.group(4),
-                             "security": "-security" in m.group(2)})
-    elif pm == "dnf":
-        for line in out.splitlines():
-            m = re.match(r"^(\S+)\.\S+\s+(\S+)\s+(\S+)\s*$", line)
-            if m:
-                pkgs.append({"name": m.group(1), "repo": m.group(3),
-                             "new": m.group(2), "old": "",
-                             "security": False})
-    elif pm == "pacman":
-        for line in out.splitlines():
-            m = re.match(r"^(\S+)\s+(\S+)\s+->\s+(\S+)", line)
-            if m:
-                pkgs.append({"name": m.group(1), "repo": "",
-                             "new": m.group(3), "old": m.group(2),
-                             "security": False})
-    elif pm == "zypper":
-        for line in out.splitlines():
-            parts = [p.strip() for p in line.split("|")]
-            if len(parts) >= 5 and parts[0] == "v":
-                pkgs.append({"name": parts[2], "repo": parts[1],
-                             "new": parts[4], "old": parts[3],
-                             "security": False})
-    return pkgs
 
 
-def pkg_updates(force=False):
-    if not force and _upd_cache["data"] and time.time() - _upd_cache["t"] < 600:
-        return _upd_cache["data"]
-    cmds = {"apt": ["apt", "list", "--upgradable"],
-            "dnf": ["dnf", "-q", "check-update"],
-            "pacman": ["pacman", "-Qu"],
-            "zypper": ["zypper", "-q", "lu"]}
-    pkgs = []
-    if _PM:
-        r = _run(cmds[_PM], capture_output=True, text=True, timeout=60,
-                 env={**os.environ, "LC_ALL": "C"})
-        pkgs = _parse_updates(_PM, r.stdout)
-    st = 0.0
-    try:
-        st = os.path.getmtime("/var/lib/apt/lists")
-    except OSError:
-        pass
-    data = {"packages": pkgs[:300], "count": len(pkgs), "pm": _PM,
-            "security": sum(1 for p in pkgs if p["security"]),
-            "lists_updated": st}
-    _upd_cache.update(t=time.time(), data=data)
-    return data
 
 
 _pubip_cache = {"t": 0.0, "ip": None}
 
 
-UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) perch"}
 
 
-def _get(url, timeout):
-    import urllib.request as ur
-    return ur.urlopen(ur.Request(url, headers=UA), timeout=timeout)
 
 
 def public_ip():
@@ -3403,99 +2948,18 @@ def perch_restart():
     return {"ok": True, "restarting_in": 2}
 
 
-# ------------------------------------------------------------- fleet --------
-# Perch already exposes a token-authenticated read API, so a second Perch is
-# all the agent a fleet view needs — no daemon, no new protocol. Strictly
-# read-only: this polls other instances, it never asks them to do anything.
-
-FLEET_FILE = os.path.join(CFG_DIR, "fleet.json")
-FLEET_MAX = 24
-FLEET_TIMEOUT = 6
 
 
-def _fleet_clean(h):
-    name = str(h.get("name", "")).strip()[:40]
-    url = str(h.get("url", "")).strip().rstrip("/")
-    if not re.match(r"^https?://[\w.\-\[\]]+(:\d+)?$", url):
-        raise ValueError(f"'{url}' is not a host URL like http://10.0.0.5:9080")
-    token = str(h.get("token", "")).strip()
-    return {"name": name or url, "url": url, "token": token}
 
 
-def fleet_cfg():
-    try:
-        with open(FLEET_FILE) as f:
-            saved = json.load(f)
-    except (OSError, ValueError):
-        return []
-    out = []
-    for h in (saved if isinstance(saved, list) else [])[:FLEET_MAX]:
-        try:
-            out.append(_fleet_clean(h))
-        except ValueError:
-            continue
-    return out
 
 
-def fleet_save(hosts):
-    if not isinstance(hosts, list):
-        raise ValueError("expected a list of hosts")
-    if len(hosts) > FLEET_MAX:
-        raise ValueError(f"at most {FLEET_MAX} hosts")
-    existing = {h["url"]: h["token"] for h in fleet_cfg()}
-    cleaned = []
-    for h in hosts:
-        c = _fleet_clean(h)
-        if not c["token"]:                  # blank means "keep what's stored"
-            c["token"] = existing.get(c["url"], "")
-        cleaned.append(c)
-    os.makedirs(CFG_DIR, exist_ok=True)
-    atomic_write(FLEET_FILE, json.dumps(cleaned))
-    os.chmod(FLEET_FILE, 0o600)             # it holds other machines' tokens
-    return fleet_public()
 
 
-def fleet_public():
-    """Config for the browser — never hand tokens back out."""
-    return [{"name": h["name"], "url": h["url"], "has_token": bool(h["token"])}
-            for h in fleet_cfg()]
 
 
-def _fleet_poll(host, out):
-    import urllib.request as ur
-    entry = {"name": host["name"], "url": host["url"], "ok": False}
-    try:
-        req = ur.Request(host["url"] + "/api/overview",
-                         headers={"X-Token": host["token"],
-                                  "User-Agent": "perch-fleet"})
-        with ur.urlopen(req, timeout=FLEET_TIMEOUT) as r:
-            o = json.load(r)
-        entry.update(ok=True, hostname=o.get("hostname", ""),
-                     cpu=o.get("cpu"), mem=(o.get("mem") or {}).get("percent"),
-                     uptime=o.get("uptime"), nproc=o.get("nproc"),
-                     os=o.get("os", ""),
-                     temp=max((t.get("c", 0) for t in o.get("temps", [])),
-                              default=None))
-    except Exception as e:  # noqa: BLE001 — one unreachable host is normal
-        entry["error"] = str(e)[:120]
-    out.append(entry)
 
 
-def fleet_status():
-    hosts = fleet_cfg()
-    if not hosts:
-        return {"hosts": [], "configured": 0}
-    out, threads = [], []
-    for h in hosts:
-        t = threading.Thread(target=_fleet_poll, args=(h, out), daemon=True)
-        t.start()
-        threads.append(t)
-    for t in threads:
-        t.join(timeout=FLEET_TIMEOUT + 2)
-    order = {h["url"]: i for i, h in enumerate(hosts)}
-    out.sort(key=lambda e: order.get(e["url"], 99))
-    return {"hosts": out, "configured": len(hosts),
-            "reachable": sum(1 for e in out if e["ok"])}
 
 
 def capabilities():
@@ -3560,347 +3024,31 @@ def yaml_convert(text, direction):
                           allow_unicode=True)
 
 
-# ---------------------------------------------------------- job runner -------
-
-JOBS = {}          # id -> {"cmd","lines","status","code","started","title"}
-_job_seq = [0]
-_job_lock = threading.Lock()
 
 
-def start_job(argv, title, privileged=False):
-    with _job_lock:
-        _job_seq[0] += 1
-        jid = str(_job_seq[0])
-    if privileged and os.geteuid() != 0:
-        # the wrapper gives a branded polkit prompt + session-long auth cache
-        wrapper = shutil.which("perch-pkexec")
-        argv = ["pkexec", wrapper, *argv] if wrapper else ["pkexec", *argv]
-    job = {"id": jid, "title": title, "cmd": " ".join(argv),
-           "lines": ["$ " + " ".join(argv), ""], "status": "running",
-           "code": None, "started": time.time()}
-    JOBS[jid] = job
-    # keep only the 30 most recent jobs
-    if len(JOBS) > 30:
-        for k in sorted(JOBS, key=lambda k: JOBS[k]["started"])[:-30]:
-            JOBS.pop(k, None)
-
-    def run():
-        try:
-            p = subprocess.Popen(argv, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, text=True,
-                                 bufsize=1,
-                                 env={**os.environ, "DEBIAN_FRONTEND":
-                                      "noninteractive"})
-            for line in p.stdout:
-                job["lines"].append(line.rstrip("\n")[:400])
-                if len(job["lines"]) > 1000:
-                    job["lines"] = job["lines"][-1000:]
-            p.wait()
-            job["code"] = p.returncode
-            job["status"] = "done" if p.returncode == 0 else "failed"
-            if p.returncode in (126, 127):
-                job["lines"].append("(authentication cancelled or failed)")
-        except Exception as e:  # noqa: BLE001
-            job["lines"].append("ERROR: " + str(e))
-            job["status"] = "failed"
-            job["code"] = -1
-
-    threading.Thread(target=run, daemon=True).start()
-    return {"id": jid}
 
 
-def job_status(jid, since=0):
-    job = JOBS.get(jid)
-    if not job:
-        raise ValueError("unknown job")
-    since = int(since or 0)
-    return {"id": jid, "status": job["status"], "code": job["code"],
-            "title": job["title"],
-            "lines": job["lines"][since:], "total": len(job["lines"])}
 
 
-# ------------------------------------------------------------- packages ------
-# Native package manager abstraction: apt / dnf / pacman / zypper detected at
-# startup, plus snap and flatpak as universal extras when installed.
 
 
-def _native_pm():
-    for pm in ("apt", "dnf", "pacman", "zypper"):
-        if shutil.which(pm):
-            return pm
-    return None
 
 
-_PM = _native_pm()
-_HAS_SNAP = bool(shutil.which("snap"))
-_HAS_FLATPAK = bool(shutil.which("flatpak"))
-
-_PM_SEARCH = {
-    "apt": lambda q: ["apt-cache", "search", "--names-only", q],
-    "dnf": lambda q: ["dnf", "-q", "search", q],
-    "pacman": lambda q: ["pacman", "-Ss", q],
-    "zypper": lambda q: ["zypper", "-q", "se", q],
-}
-_PM_INSTALL = {
-    "apt": lambda n: ["apt-get", "install", "-y", n],
-    "dnf": lambda n: ["dnf", "install", "-y", n],
-    "pacman": lambda n: ["pacman", "-S", "--noconfirm", n],
-    "zypper": lambda n: ["zypper", "-n", "install", n],
-}
-_PM_REMOVE = {
-    "apt": lambda n: ["apt-get", "remove", "-y", n],
-    "dnf": lambda n: ["dnf", "remove", "-y", n],
-    "pacman": lambda n: ["pacman", "-R", "--noconfirm", n],
-    "zypper": lambda n: ["zypper", "-n", "remove", n],
-}
-_PM_UPDATE_ONE = {
-    "apt": lambda n: ["apt-get", "install", "--only-upgrade", "-y", n],
-    "dnf": lambda n: ["dnf", "upgrade", "-y", n],
-    "pacman": lambda n: ["pacman", "-S", "--noconfirm", n],
-    "zypper": lambda n: ["zypper", "-n", "update", n],
-}
-_PM_UPGRADE = {
-    "apt": ["sh", "-c", "apt-get update && apt-get upgrade -y"],
-    "dnf": ["dnf", "upgrade", "-y"],
-    "pacman": ["pacman", "-Syu", "--noconfirm"],
-    "zypper": ["sh", "-c", "zypper -n refresh && zypper -n update"],
-}
 
 
-def _parse_pm_search(pm, out):
-    pkgs = []
-    if pm == "apt":
-        for line in out.splitlines():
-            if " - " in line:
-                name, desc = line.split(" - ", 1)
-                pkgs.append({"name": name.strip(), "desc": desc[:120]})
-    elif pm == "dnf":
-        for line in out.splitlines():
-            m = re.match(r"^(\S+)\.\S+\s*:\s*(.*)", line)
-            if m:
-                pkgs.append({"name": m.group(1), "desc": m.group(2)[:120]})
-    elif pm == "pacman":
-        cur = None
-        for line in out.splitlines():
-            m = re.match(r"^\S+/(\S+)\s+\S+", line)
-            if m:
-                cur = {"name": m.group(1), "desc": ""}
-                pkgs.append(cur)
-            elif cur is not None and line[:1] in (" ", "\t"):
-                cur["desc"] = (cur["desc"] + " " + line.strip()).strip()[:120]
-    elif pm == "zypper":
-        for line in out.splitlines():
-            parts = [p.strip() for p in line.split("|")]
-            if (len(parts) >= 4 and parts[1] and parts[1] != "Name"
-                    and not set(parts[1]) <= {"-", "+"}):
-                pkgs.append({"name": parts[1], "desc": parts[2][:120]})
-    return pkgs[:40]
 
 
-def _installed_native():
-    if _PM == "apt":
-        r = _run(["dpkg-query", "-f", "${Package}\n", "-W"],
-                 capture_output=True, text=True)
-    elif _PM in ("dnf", "zypper"):
-        r = _run(["rpm", "-qa", "--qf", "%{NAME}\n"],
-                 capture_output=True, text=True, timeout=30)
-    elif _PM == "pacman":
-        r = _run(["pacman", "-Qq"], capture_output=True, text=True)
-    else:
-        return set()
-    return set(r.stdout.split())
 
 
-def pkg_search(q):
-    q = q.strip()
-    out = {"native_pm": _PM, "native": [], "snap": [], "flatpak": []}
-    if len(q) < 2:
-        return out
-    if _PM:
-        r = _run(_PM_SEARCH[_PM](q), capture_output=True, text=True,
-                 timeout=30, env={**os.environ, "LC_ALL": "C"})
-        installed = _installed_native()
-        out["native"] = [{**p, "installed": p["name"] in installed}
-                         for p in _parse_pm_search(_PM, r.stdout)]
-    if _HAS_SNAP:
-        rs = _run(["snap", "find", q], capture_output=True, text=True,
-                  timeout=25, env={**os.environ, "LC_ALL": "C"})
-        rsl = _run(["snap", "list"], capture_output=True, text=True)
-        snap_inst = {ln.split()[0] for ln in rsl.stdout.splitlines()[1:] if ln}
-        for line in rs.stdout.splitlines()[1:21]:
-            parts = line.split(None, 4)
-            if len(parts) >= 5:
-                out["snap"].append(
-                    {"name": parts[0], "version": parts[1],
-                     "publisher": parts[2], "desc": parts[4][:120],
-                     "installed": parts[0] in snap_inst})
-    if _HAS_FLATPAK:
-        rf = _run(["flatpak", "search",
-                   "--columns=application,name,description", q],
-                  capture_output=True, text=True, timeout=30)
-        ri = _run(["flatpak", "list", "--columns=application"],
-                  capture_output=True, text=True)
-        flat_inst = set(ri.stdout.split())
-        for line in rf.stdout.splitlines()[:20]:
-            parts = line.split("\t")
-            if len(parts) >= 2 and "." in parts[0]:
-                out["flatpak"].append(
-                    {"name": parts[0], "title": parts[1],
-                     "desc": (parts[2] if len(parts) > 2 else "")[:120],
-                     "installed": parts[0] in flat_inst})
-    return out
 
 
-# ---- everything installed, from every package manager present ----
-
-def _rows_from(out, cols, sizes_in_kb=False):
-    """Tab-separated query output -> package dicts."""
-    pkgs = []
-    for line in out.splitlines():
-        parts = line.split("\t")
-        if not parts or not parts[0].strip():
-            continue
-        d = dict(zip(cols, [p.strip() for p in parts]))
-        try:
-            size = int(d.get("size") or 0) * (1024 if sizes_in_kb else 1)
-        except ValueError:
-            size = 0
-        pkgs.append({"name": d.get("name", ""), "version": d.get("version", ""),
-                     "size": size, "summary": (d.get("summary") or "")[:160]})
-    return pkgs
 
 
-def _installed_for(mgr):
-    """Full installed list for one manager, unsorted and unfiltered."""
-    cols = ("name", "version", "size", "summary")
-    if mgr == "native":
-        if _PM == "apt":
-            r = _run(["dpkg-query", "-W", "-f",
-                      "${Package}\t${Version}\t${Installed-Size}\t"
-                      "${binary:Summary}\n"],
-                     capture_output=True, text=True, timeout=30)
-            return _rows_from(r.stdout, cols, sizes_in_kb=True)
-        if _PM in ("dnf", "zypper"):
-            r = _run(["rpm", "-qa", "--qf",
-                      "%{NAME}\t%{VERSION}-%{RELEASE}\t%{SIZE}\t%{SUMMARY}\n"],
-                     capture_output=True, text=True, timeout=45)
-            return _rows_from(r.stdout, cols)
-        if _PM == "pacman":
-            if shutil.which("expac"):
-                r = _run(["expac", "-Q", "%n\t%v\t%m\t%d"],
-                         capture_output=True, text=True, timeout=30)
-                return _rows_from(r.stdout, cols)
-            r = _run(["pacman", "-Q"], capture_output=True, text=True, timeout=30)
-            return [{"name": p.split()[0], "version": p.split()[-1],
-                     "size": 0, "summary": ""}
-                    for p in r.stdout.splitlines() if p.strip()]
-        return []
-    if mgr == "snap":
-        if not _HAS_SNAP:
-            return []
-        r = _run(["snap", "list"], capture_output=True, text=True, timeout=25)
-        out = []
-        for line in r.stdout.splitlines()[1:]:      # drop the header row
-            f = line.split()
-            if len(f) >= 2:
-                out.append({"name": f[0], "version": f[1], "size": 0,
-                            "summary": " ".join(f[4:6]) if len(f) > 5 else ""})
-        return out
-    if mgr == "flatpak":
-        if not _HAS_FLATPAK:
-            return []
-        r = _run(["flatpak", "list", "--app",
-                  "--columns=application,version,size,name"],
-                 capture_output=True, text=True, timeout=25)
-        out = []
-        for line in r.stdout.splitlines():
-            f = [x.strip() for x in line.split("\t")]
-            if f and f[0]:
-                out.append({"name": f[0], "version": f[1] if len(f) > 1 else "",
-                            "size": 0,
-                            "summary": (f[3] if len(f) > 3 else "")[:160]})
-        return out
-    raise ValueError("unknown package manager")
 
 
-def installed_packages(mgr="native", q="", limit=300, sort="name"):
-    """Installed packages for one manager, filtered and capped.
-
-    The full list is thousands of rows on a normal desktop, so filtering and
-    the cap happen here rather than shipping it all to the browser.
-    """
-    pkgs = _installed_for(mgr)
-    total = len(pkgs)
-    q = (q or "").strip().lower()
-    if q:
-        pkgs = [p for p in pkgs
-                if q in p["name"].lower() or q in p["summary"].lower()]
-    upgradable = set()
-    if mgr == "native":
-        try:
-            upgradable = {p["name"] for p in pkg_updates()["packages"]}
-        except Exception:  # noqa: BLE001 — the list is still useful without it
-            pass
-    for p in pkgs:
-        p["upgradable"] = p["name"] in upgradable
-    if sort == "size":
-        pkgs.sort(key=lambda p: -p["size"])
-    else:
-        pkgs.sort(key=lambda p: p["name"].lower())
-    try:
-        limit = max(1, min(2000, int(limit)))
-    except (TypeError, ValueError):
-        limit = 300
-    return {"mgr": mgr, "pm": _PM, "total": total, "matched": len(pkgs),
-            "packages": pkgs[:limit], "truncated": len(pkgs) > limit,
-            "bytes": sum(p["size"] for p in pkgs)}
 
 
-def pkg_install(mgr, name):
-    if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.+_-]{0,80}", name):
-        raise ValueError("invalid package name")
-    if mgr in ("native", "apt") and _PM:
-        return start_job(_PM_INSTALL[_PM](name),
-                         f"Install {name} ({_PM})", privileged=True)
-    if mgr in ("native-remove", "apt-remove") and _PM:
-        return start_job(_PM_REMOVE[_PM](name),
-                         f"Remove {name} ({_PM})", privileged=True)
-    if mgr == "snap":
-        return start_job(["snap", "install", name],
-                         f"Install {name} (snap)", privileged=True)
-    if mgr == "snap-remove":
-        return start_job(["snap", "remove", name],
-                         f"Remove {name} (snap)", privileged=True)
-    if mgr == "flatpak":  # flatpak talks to polkit itself — no pkexec
-        return start_job(["flatpak", "install", "-y", "--noninteractive",
-                          name], f"Install {name} (flatpak)")
-    if mgr == "flatpak-remove":
-        return start_job(["flatpak", "uninstall", "-y", name],
-                         f"Remove {name} (flatpak)")
-    if mgr in ("native-update", "apt-update") and _PM:
-        return start_job(_PM_UPDATE_ONE[_PM](name),
-                         f"Update {name} ({_PM})", privileged=True)
-    if mgr == "snap-update":
-        return start_job(["snap", "refresh", name],
-                         f"Update {name} (snap)", privileged=True)
-    if mgr == "flatpak-update":
-        return start_job(["flatpak", "update", "-y", "--noninteractive", name],
-                         f"Update {name} (flatpak)")
-    raise ValueError("unknown package manager")
 
-
-def upgrade_all(mgr):
-    _upd_cache["t"] = 0
-    if mgr in ("native", "apt") and _PM:
-        return start_job(_PM_UPGRADE[_PM],
-                         f"Upgrade all {_PM} packages", privileged=True)
-    if mgr == "snap":
-        return start_job(["snap", "refresh"], "Refresh all snaps",
-                         privileged=True)
-    if mgr == "flatpak":
-        return start_job(["flatpak", "update", "-y"],
-                         "Update all flatpaks")
-    raise ValueError("unknown package manager")
 
 
 # -------------------------------------------------------------- settings -----
@@ -4390,9 +3538,6 @@ def backup_set(body):
     return backup_get()
 
 
-def _sh_quote(s):
-    import shlex
-    return shlex.quote(s)
 
 
 def backup_run():
@@ -4614,19 +3759,6 @@ def ssh_keygen(name, comment):
     return ssh_keys()
 
 
-def pg_containers():
-    """Running containers whose image looks like Postgres — for a quick picker."""
-    if not shutil.which("docker"):
-        return []
-    r = _run(["docker", "ps", "--format", "{{.Names}}\t{{.Image}}"],
-             capture_output=True, text=True)
-    out = []
-    for line in r.stdout.splitlines():
-        parts = line.split("\t")
-        if len(parts) == 2 and ("postgres" in parts[1].lower()
-                                or "postgis" in parts[1].lower()):
-            out.append({"name": parts[0], "image": parts[1]})
-    return out
 
 
 def slideshow_set(cfg):
