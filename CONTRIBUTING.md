@@ -14,6 +14,7 @@ src/perch/
   containers.py Docker, Podman, nerdctl, LXD/Incus, Kubernetes
   history.py    hourly rollups of the minute samples, ranges, CSV
   fleet.py      polling other Perch instances (read-only)
+  traffic.py    connections, interface counters, packet capture
   config.py     static metadata (name, version, default port) — the version
                 the running app reports, so keep it in step with setup.cfg
   desktop.py    native GTK/WebKit window (with browser fallback)

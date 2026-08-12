@@ -2,6 +2,17 @@
 
 ## 1.5.0
 
+- **Traffic tab.** Two layers, because they need different privileges.
+  Unprivileged and always available: every live TCP/UDP connection with the
+  owning process, filterable and grouped by state, with the busiest remote
+  addresses (optionally reverse-resolved); plus per-interface in/out rates and
+  the error and drop counters that usually only surface in `ip -s link`.
+  Privileged: **packet capture** through `tcpdump`, bounded by a packet count
+  *and* a wall-clock limit so a forgotten capture cannot fill the disk, saved
+  as a normal `.pcap` you can view in place or download and open in Wireshark.
+  A capture records whatever crosses the wire, which on unencrypted protocols
+  includes credentials — it is never started automatically and the UI says so.
+
 - **History that outlives the samples.** Monitor kept 24 hours of 1-minute
   samples, which could tell you memory was at 92% but not whether that was
   normal for a Tuesday. Each finished hour is now rolled into one row (average
@@ -48,9 +59,9 @@
   ordered scripts instead of one 3900-line file, still with no build step: they
   concatenate byte-for-byte back to the original and share one global scope, so
   execution is identical rather than merely equivalent.
-- Frontend smoke tests grew from 15 to **26 checks**, now covering the file
-  browser, terminal, API client and database browser — the riskiest surfaces
-  that had no coverage at all.
+- Frontend smoke tests grew from 15 to **28 checks**, now covering the file
+  browser, terminal, API client, database browser and traffic views — the
+  riskiest surfaces that had no coverage at all.
 
 ## 1.4.0
 
