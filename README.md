@@ -82,6 +82,9 @@ step, no cloud.
   failed logins from the journal grouped by source, `sshd_config` red flags,
   admin-group membership and automatic-update status. Scored, worst first,
   read-only.
+
+  ![Security — scored findings, ports reachable from the network, failed logins and admin accounts](docs/security.png)
+
 - **Fleet** — other machines running Perch, in one grid. Each is polled over
   its own read-only API, so there is no agent to install; their tokens are
   stored chmod 600 and never sent to the browser.
@@ -89,7 +92,7 @@ step, no cloud.
   any process in a detail modal, browse the journal live, read kernel
   tunables, and see pending APT updates with a sidebar badge.
 
-![Tab tour — Overview, Monitor alerts, installed packages, Network ports & firewall, Storage, and Settings](docs/tour.gif)
+![Tab tour — Overview, Monitor, Security, Traffic, installed packages and Storage](docs/tour.gif)
 
 ### Manage storage & files
 - **Storage** — disk usage plus a folder-size analyzer to find what's eating
@@ -129,6 +132,9 @@ step, no cloud.
   `.pcap` you can read in place or download for Wireshark. Capture needs a
   password prompt and records everything on the wire, including credentials on
   unencrypted protocols, so it is always deliberate.
+
+  ![Traffic — per-interface rates with error and drop counters, and every live connection with its process](docs/traffic.png)
+
 - **Dev** — Docker containers with live stats, logs, shell, compose control
   and prune, plus **disk usage** showing what images, containers, volumes and
   build cache actually cost and how much a prune would reclaim; systemd user
