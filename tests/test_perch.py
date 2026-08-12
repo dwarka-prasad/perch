@@ -668,7 +668,12 @@ class StaticPathContainment(unittest.TestCase):
             self.assertEqual((kind, code), ("err", 404), rel)
 
     def test_real_asset_is_served(self):
-        kind, code = self._try("app.js")
+        kind, code = self._try("styles.css")
+        self.assertEqual((kind, code), ("send", 200))
+
+    def test_asset_in_a_subdirectory_is_served(self):
+        """The frontend lives under static/js/, so nesting has to work."""
+        kind, code = self._try("js/core.js")
         self.assertEqual((kind, code), ("send", 200))
 
 

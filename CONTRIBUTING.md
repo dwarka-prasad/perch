@@ -10,7 +10,9 @@ src/perch/
   config.py     static metadata (name, version, default port) — the version
                 the running app reports, so keep it in step with setup.cfg
   desktop.py    native GTK/WebKit window (with browser fallback)
-  web/          frontend: index.html + static/{styles.css, app.js}
+  web/          frontend: index.html + static/{styles.css, js/*.js}
+                one global scope, loaded in order — a positional split
+                of what used to be a single app.js, still no build step
 tests/
   test_perch.py     unit + HTTP smoke tests (stdlib unittest only)
   frontend/         headless-Chrome smoke tests driving the real app
