@@ -24,7 +24,7 @@ jobs:
       - name: Python syntax
         run: python -m compileall -q src/perch
       - name: Frontend JS syntax
-        run: node --check src/perch/web/static/app.js
+        run: for f in src/perch/web/static/js/*.js; do node --check "$f"; done
 
   test:
     name: Tests
