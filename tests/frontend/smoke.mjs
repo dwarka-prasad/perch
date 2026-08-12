@@ -327,6 +327,160 @@ try {
       throw new Error(`round-trip changed the document: ${back}`);
   });
 
+  await check("security overview scores and lists findings", async () => {
+    const out = await page.eval(`
+      goTab("security"); await new Promise(r=>setTimeout(r,4000));
+      return JSON.stringify([
+        document.querySelector("#secScore").innerText,
+        document.querySelector("#secFindings").innerText.length,
+        document.querySelector("#secAdmins").innerText.includes("Automatic")]);`);
+    const [score, findingsLen, hasAuto] = JSON.parse(out);
+    if (!/\d+\/100/.test(score)) throw new Error(`score reads ${score}`);
+    atLeast(findingsLen, 10, "findings text");
+    eq(hasAuto, true, "automatic-updates line present");
+  });
+
+  await check("history ranges switch between minute and hourly", async () => {
+    const out = await page.eval(`
+      goTab("monitor"); await new Promise(r=>setTimeout(r,2500));
+      const a=document.querySelector("#monRangeNote").textContent;
+      document.querySelector('[data-range="30d"]').click();
+      await new Promise(r=>setTimeout(r,2000));
+      const b=document.querySelector("#monRangeNote").textContent;
+      document.querySelector('[data-range="24h"]').click();
+      await new Promise(r=>setTimeout(r,1500));
+      return JSON.stringify([a,b]);`);
+    const [day, month] = JSON.parse(out);
+    if (!/minute/.test(day)) throw new Error(`24h note reads ${day}`);
+    if (!/hourly/.test(month)) throw new Error(`30d note reads ${month}`);
+  });
+
+  await check("history exports as CSV", async () => {
+    const r = await fetch(`http://127.0.0.1:${port}/api/trendcsv?range=24h`,
+                          { headers: { "X-Token": token } });
+    const text = await r.text();
+    const ctype = (r.headers.get("content-type") || "").split(";")[0].trim();
+    eq(ctype, "text/csv", "content type");
+    if (!text.startsWith("time,cpu"))
+      throw new Error(`csv header reads ${text.slice(0, 40)}`);
+  });
+
+  await check("custom rule can be tested before saving", async () => {
+    const out = await page.eval(`
+      goTab("monitor"); await new Promise(r=>setTimeout(r,2000));
+      document.querySelector("#crAdd").click();
+      document.querySelector(".crName").value="nothing listens here";
+      document.querySelector(".crKind").value="port";
+      document.querySelector(".crTarget").value="65500";
+      document.querySelector("[data-crtest]").click();
+      await new Promise(r=>setTimeout(r,1500));
+      return document.querySelector("#crStat").innerText;`);
+    if (!/would alert/.test(out))
+      throw new Error(`expected a breach for an unused port, got: ${out}`);
+  });
+
+  await check("keyboard shortcut sheet opens on ? and closes on Esc", async () => {
+    const out = await page.eval(`
+      document.dispatchEvent(new KeyboardEvent("keydown",{key:"?",bubbles:true}));
+      await new Promise(r=>setTimeout(r,300));
+      const open=document.querySelector("#keyHelp").classList.contains("open");
+      const rows=document.querySelectorAll("#keyHelpBody .krow").length;
+      document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));
+      await new Promise(r=>setTimeout(r,300));
+      const closed=!document.querySelector("#keyHelp").classList.contains("open");
+      return JSON.stringify([open,rows,closed]);`);
+    const [open, rows, closed] = JSON.parse(out);
+    eq(open, true, "sheet opens on ?");
+    atLeast(rows, 8, "listed shortcuts");
+    eq(closed, true, "sheet closes on Escape");
+  });
+
+  await check("fleet view reads and writes its host list", async () => {
+    const out = await page.eval(`
+      goTab("fleet"); await new Promise(r=>setTimeout(r,1500));
+      document.querySelector("#fleetAdd").click();
+      document.querySelector(".flName").value="node-a";
+      document.querySelector(".flUrl").value="http://127.0.0.1:9";
+      document.querySelector(".flTok").value="not-a-real-token";
+      document.querySelector("#fleetSave").click();
+      await new Promise(r=>setTimeout(r,4000));
+      return JSON.stringify([
+        document.querySelector("#fleetStat").textContent,
+        document.querySelectorAll("#fleetBody tbody tr").length,
+        document.querySelector("#fleetBody").innerText]);`);
+    const [stat, rows, body] = JSON.parse(out);
+    if (!/saved 1/.test(stat)) throw new Error(`save status reads ${stat}`);
+    eq(rows, 1, "fleet rows");
+    if (!/node-a/.test(body)) throw new Error("host name missing from the grid");
+    // an unreachable host must be reported, not silently dropped
+    if (!/unreachable|refused|Connection|Error|error/i.test(body))
+      throw new Error(`expected an error state, got: ${body.slice(0,80)}`);
+    // tokens must never come back to the browser
+    const cfg = await (await fetch(`http://127.0.0.1:${port}/api/fleetconfig`,
+                                   { headers: { "X-Token": token } })).json();
+    if (JSON.stringify(cfg).includes("not-a-real-token"))
+      throw new Error("fleet config leaked a token to the client");
+  });
+
+  await check("file browser lists the home directory", async () => {
+    const out = await page.eval(`
+      goTab("files"); await new Promise(r=>setTimeout(r,2500));
+      return JSON.stringify([
+        document.querySelectorAll("#ftable tbody tr").length,
+        document.querySelector("#fCrumbs").innerText.length]);`);
+    const [rows, crumbs] = JSON.parse(out);
+    atLeast(rows, 1, "file rows");
+    atLeast(crumbs, 1, "breadcrumb text");
+  });
+
+  await check("terminal attaches a live shell", async () => {
+    const out = await page.eval(`
+      goTab("term"); await new Promise(r=>setTimeout(r,4000));
+      const panes=document.querySelectorAll("#termStage .term-pane").length;
+      const text=document.querySelector("#termStage").innerText||"";
+      return JSON.stringify([panes, text.length]);`);
+    const [panes, textLen] = JSON.parse(out);
+    atLeast(panes, 1, "terminal panes");
+    atLeast(textLen, 1, "terminal output (a prompt should have rendered)");
+  });
+
+  await check("API client sends a request and shows the response", async () => {
+    const out = await page.eval(`
+      goTab("api"); await new Promise(r=>setTimeout(r,1200));
+      document.querySelector("#hUrl2").value="http://127.0.0.1:${port}/api/health";
+      document.querySelector("#hSend2").click();
+      await new Promise(r=>setTimeout(r,3000));
+      return JSON.stringify([
+        document.querySelector("#hResMeta2").innerText,
+        document.querySelector("#hRes2").textContent]);`);
+    const [meta, bodyText] = JSON.parse(out);
+    if (!/200/.test(meta)) throw new Error(`response meta reads ${meta}`);
+    if (!/ok/.test(bodyText)) throw new Error(`response body reads ${bodyText}`);
+  });
+
+  await check("database browser runs a SQLite query", async () => {
+    // sqlite_query refuses a path that is not a real database, so make one
+    const dbPath = join(home, "probe.db");
+    const made = spawnSync("python3", ["-c",
+      `import sqlite3;c=sqlite3.connect(${JSON.stringify(dbPath)});` +
+      `c.execute("CREATE TABLE IF NOT EXISTS notes(id INTEGER, body TEXT)");` +
+      `c.execute("INSERT INTO notes VALUES (1, 'hello')");c.commit();c.close()`]);
+    if (made.status !== 0)
+      throw new Error("could not create the probe database");
+    const out = await page.eval(`
+      goTab("db"); await new Promise(r=>setTimeout(r,1200));
+      document.querySelector("#dbPath").value="${home}/probe.db";
+      document.querySelector("#dbSql").value="SELECT id, body FROM notes";
+      document.querySelector("#dbWrite").checked=false;
+      document.querySelector("#dbRun").click();
+      await new Promise(r=>setTimeout(r,2500));
+      return JSON.stringify([document.querySelector("#dbStat").textContent,
+                             document.querySelector("#dbResult").innerText]);`);
+    const [stat, table] = JSON.parse(out);
+    if (!/hello/.test(table))
+      throw new Error(`query result missing (status: ${stat}, table: ${table})`);
+  });
+
   await check("every tab opens without throwing", async () => {
     const errs = await page.eval(`
       const tabs=[...document.querySelectorAll("nav button[data-tab]")]

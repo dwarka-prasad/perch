@@ -23,7 +23,9 @@
     <button data-tab="updates">📦 Updates <span class="badge" id="updBadge"></span></button>
     <button data-tab="packages">🛒 Packages</button>
     <button data-tab="settings">⚙️ Settings</button>
+    <button data-tab="security">🔒 Security</button>
     <button data-tab="users">👤 Users</button>
+    <button data-tab="fleet">🛰️ Fleet</button>
     <div class="ngroup">Storage &amp; files</div>
     <button data-tab="storage">💾 Storage</button>
     <button data-tab="files">📁 Files</button>
@@ -145,10 +147,35 @@
         minute and sent through the same channels, cooldown and master switch as
         the rules above. Folder rules measure with a short time budget, so very
         deep trees report a lower bound.</div></div>
-    <div class="panel"><h2>Last 24 hours <span class="muted">— 1-minute samples,
-      survives restarts</span></h2>
+    <div class="panel"><h2>History <span class="muted" id="monRangeNote">— 1-minute
+      samples, survives restarts</span></h2>
+      <div class="row">
+        <div class="seg" id="monRange">
+          <button data-range="24h" class="on">24 hours</button>
+          <button data-range="7d">7 days</button>
+          <button data-range="30d">30 days</button>
+          <button data-range="90d">90 days</button></div>
+        <span style="flex:1"></span>
+        <button class="btn small" id="monExport">⬇ Export CSV</button></div>
       <svg id="monChart" style="width:100%;height:180px"></svg>
-      <div class="legend" id="monLegend"></div></div>
+      <div class="legend" id="monLegend"></div>
+      <div class="muted" style="font-size:11.5px;margin-top:6px">Ranges longer
+        than a day are hourly averages rolled up from the minute samples, so
+        they survive well past the point the raw samples are pruned.</div></div>
+    <div class="panel"><h2>Periodic digest <span class="muted">— a summary on a
+      schedule, through the channels above</span></h2>
+      <div class="row" style="margin-bottom:0">
+        <label class="pill"><input type="checkbox" id="dgOn"> send a weekly digest</label>
+        <span class="muted" style="font-size:12px">every</span>
+        <select id="dgDay" class="btn"></select>
+        <span class="muted" style="font-size:12px">at</span>
+        <select id="dgHour" class="btn"></select>
+        <button class="btn small" id="dgSave">💾 Save</button>
+        <button class="btn small" id="dgTest">📤 Send one now</button>
+        <span class="muted" id="dgStat" style="font-size:12px"></span></div>
+      <pre id="dgPreview" class="mono" style="margin-top:8px;font-size:11.5px;
+        background:var(--track);padding:10px;border-radius:8px;
+        white-space:pre-wrap"></pre></div>
     <div class="panel"><h2>Alert channels <span class="muted">— where alerts are sent</span></h2>
       <div class="row"><label class="pill"><input type="checkbox" id="ntDesktop"> desktop notifications</label>
         <button class="btn small" id="ntAdd">＋ Add channel</button>
@@ -172,6 +199,41 @@
         appended lines; journal rules watch system / user / kernel logs.</div></div>
     <div class="panel"><h2>Alert history</h2>
       <table id="monEvents"><tbody></tbody></table></div>
+  </section>
+
+  <section id="tab-security">
+    <div class="panel"><h2>Security overview <span class="muted" id="secScore"></span>
+      <button class="btn small" id="secReload" style="margin-left:8px">↻ Re-check</button></h2>
+      <div id="secFindings" class="muted" style="font-size:12.5px">checking…</div>
+      <div class="muted" style="font-size:11.5px;margin-top:8px">Assembled from
+        what Perch already knows — exposed ports, firewall state, pending
+        security updates — plus the journal and your SSH config. Nothing here
+        changes anything; each finding links to the tab that can.</div></div>
+    <div class="panel"><h2>Reachable from the network</h2>
+      <div id="secPorts" class="muted" style="font-size:12.5px">…</div></div>
+    <div class="panel"><h2>Failed logins <span class="muted" id="secLoginMeta"></span></h2>
+      <div id="secLogins" class="muted" style="font-size:12.5px">…</div></div>
+    <div class="panel"><h2>Administrators &amp; automatic updates</h2>
+      <div id="secAdmins" class="muted" style="font-size:12.5px">…</div></div>
+  </section>
+
+  <section id="tab-fleet">
+    <div class="panel"><h2>Other machines <span class="muted" id="fleetMeta"></span>
+      <button class="btn small" id="fleetReload" style="margin-left:8px">↻</button></h2>
+      <div id="fleetBody" class="muted" style="font-size:12.5px">…</div></div>
+    <div class="panel"><h2>Configured hosts</h2>
+      <div class="row"><button class="btn small" id="fleetAdd">＋ Add host</button>
+        <button class="btn" id="fleetSave">💾 Save hosts</button>
+        <span class="muted" id="fleetStat" style="font-size:12px"></span></div>
+      <div id="fleetHosts" style="margin-top:8px"></div>
+      <div class="muted" style="font-size:11.5px;margin-top:6px">Each machine
+        runs its own Perch; this polls their read-only APIs, it never asks them
+        to do anything. Paste the other machine's token from its
+        <span class="mono">~/.perch-token</span> — leave the field blank when
+        editing to keep the stored one. Tokens live in
+        <span class="mono">~/.config/perch/fleet.json</span> (chmod 600) and are
+        never sent back to this page. The remote Perch must be reachable, so it
+        needs <span class="mono">PERCH_HOST=0.0.0.0</span> there.</div></div>
   </section>
 
   <section id="tab-tools">
@@ -893,6 +955,12 @@
     <button class="btn" id="aiGo">Ask ✨</button>
   </div>
 </div>
+<div id="keyHelp"><div id="keyHelpBox">
+  <header><b style="font-size:14px">⌨ Keyboard shortcuts</b>
+    <span style="flex:1"></span>
+    <button class="btn small" id="keyHelpClose">✕</button></header>
+  <div id="keyHelpBody"></div>
+</div></div>
 <div class="toast" id="toast"></div>
 <script>const TOKEN="{{TOKEN}}";const HOME_DIR="{{HOME}}";</script>
 <script src="/static/vendor/xterm.js"></script>

@@ -43,7 +43,7 @@ document.querySelectorAll("nav button[data-tab]").forEach(b=>b.onclick=()=>{
     search:()=>{$("#sq").focus();searchStatus();},
     net:loadNet,dev:loadDev,kernel:loadKernel,
     logs:()=>{if(!$("#logView").innerHTML)loadLogs(false);},
-    monitor:loadMonitor,
+    monitor:loadMonitor,security:loadSecurity,fleet:loadFleet,
     updates:loadUpdates,packages:()=>{$("#pkgQ").focus();loadInstalled();},
     settings:loadSettings,runtimes:loadRuntimes,term:openTerminal,
     db:loadDb,git:loadGit,api:loadApiClient,tools:loadSched}[b.dataset.tab]||(()=>{}))();
@@ -208,6 +208,11 @@ const PAL_ITEMS=[
      ["dev","🧰 Dev"],["tools","🔧 Tools"]]
     .map(([t,l])=>({label:l,hint:"tab",act:()=>goTab(t)})),
   {label:"✨ Ask the assistant",hint:"action",act:()=>aiOpen()},
+  {label:"🔒 Security overview",hint:"tab",act:()=>goTab("security")},
+  {label:"🛰️ Fleet — other machines",hint:"tab",act:()=>goTab("fleet")},
+  {label:"⌨ Keyboard shortcuts",hint:"action",act:()=>keyHelpOpen()},
+  {label:"⬇ Export history as CSV",hint:"action",act:()=>{goTab("monitor");
+    setTimeout(()=>$("#monExport").click(),400);}},
   {label:"🔁 Rebuild file index",hint:"action",act:()=>$("#reindex").click()},
   {label:"🔔 Send test notification",hint:"action",act:()=>$("#monTest").click()},
   {label:"⏸ Stop / start alerts",hint:"action",
@@ -2407,7 +2412,7 @@ const MON_LABELS={cpu:"CPU above % (sustained 60 s)",mem:"Memory above %",
   battery:"Battery below % (unplugged)"};
 async function loadMonitor(){
   try{
-    const m=await api("/api/monitor");
+    const m=await api("/api/monitor?brief=1");
     if(m.ctl)renderAlertCtl(m.ctl);
     crRules=m.custom||[];crKinds=m.custom_kinds||{};renderCustom();
     $("#monRules tbody").innerHTML=Object.entries(m.cfg).map(([k,r])=>`
@@ -2420,7 +2425,7 @@ async function loadMonitor(){
       <td style="width:80px"><span class="pill">${esc(e.rule)}</span></td>
       <td>${esc(e.msg)}</td></tr>`).join("")
       :`<tr><td class="muted" style="padding:12px">no alerts fired yet 🎉</td></tr>`;
-    drawMonChart(m.history);
+    loadTrend();loadDigest();
     loadChannels();loadLogwatch();
   }catch(e){toast(e.message,false);}
 }
@@ -2444,10 +2449,24 @@ function renderCustom(){
         ${r.kind==="path"?"":"disabled"}>
       <label class="pill"><input type="checkbox" class="crEn" data-i="${i}"
         ${r.enabled!==false?"checked":""}> on</label>
+      <button class="btn small" data-crtest="${i}" title="evaluate this rule right now">Test</button>
       <span class="hint" data-crdel="${i}" style="color:var(--crit);cursor:pointer">✕</span>
     </div>`).join("")||'<span class="muted" style="font-size:12px">no custom rules yet</span>';
   $("#crRules").querySelectorAll("[data-crdel]").forEach(el=>el.onclick=()=>{
     collectCustom();crRules.splice(+el.dataset.crdel,1);renderCustom();});
+  // evaluate one rule immediately, so you learn whether it works without
+  // saving it and waiting out the once-a-minute cycle
+  $("#crRules").querySelectorAll("[data-crtest]").forEach(b=>b.onclick=async()=>{
+    collectCustom();
+    const rule=crRules[+b.dataset.crtest];
+    b.disabled=true;$("#crStat").textContent="testing…";
+    try{const r=await api("/api/customtest",{method:"POST",
+      body:JSON.stringify({rule})});
+      $("#crStat").innerHTML=r.breached
+        ?`<b style="color:var(--serious)">would alert:</b> ${esc(r.message)}`
+        :`<span style="color:var(--goodtext)">${esc(r.message)}</span>`;}
+    catch(e){$("#crStat").textContent="";toast(e.message,false);}
+    b.disabled=false;});
   // the threshold box only means anything for folder-size rules
   $("#crRules").querySelectorAll(".crKind").forEach(s=>s.onchange=()=>{
     collectCustom();renderCustom();});
@@ -2471,6 +2490,197 @@ $("#crSave")&&($("#crSave").onclick=async()=>{
     $("#crStat").textContent=`saved ${r.rules.length} rule(s) ✓`;
     toast("custom rules saved");}
   catch(e){$("#crStat").textContent="";toast(e.message,false);}});
+
+/* ---- security overview ---- */
+const SEV_ICON={crit:"🔴",warn:"🟠",info:"🔵"};
+async function loadSecurity(){
+  const body=$("#secFindings");if(!body)return;
+  body.textContent="checking…";
+  try{
+    const s=await api("/api/security");
+    const color=s.score>=90?"var(--goodtext)":s.score>=70?"var(--s1)"
+      :s.score>=50?"var(--serious)":"var(--crit)";
+    $("#secScore").innerHTML=`— <b style="color:${color}">${s.score}/100</b>`;
+    const goTo={"Firewall is off":"net","No firewall installed":"net"};
+    body.innerHTML=s.findings.length?s.findings.map(f=>`
+      <div class="finding"><span class="fi">${SEV_ICON[f.sev]||"ℹ️"}</span>
+        <div style="flex:1"><div class="ft">${esc(f.title)}</div>
+        <div class="fd">${esc(f.detail)}</div></div>
+        ${/port|Firewall|firewall/.test(f.title)?'<button class="btn small" data-sectab="net">Network</button>':""}
+        ${/security update/.test(f.title)?'<button class="btn small" data-sectab="updates">Updates</button>':""}
+        ${/SSH|Permit|Password/i.test(f.title)?'<button class="btn small" data-sectab="term">Terminal</button>':""}
+      </div>`).join("")
+      :'<span style="color:var(--goodtext)">nothing looks exposed 🎉</span>';
+    body.querySelectorAll("[data-sectab]").forEach(b=>
+      b.onclick=()=>goTab(b.dataset.sectab));
+    $("#secPorts").innerHTML=s.public_ports.length?
+      '<table><thead><tr><th class="num">Port</th><th>Bind</th><th>Process</th></tr></thead><tbody>'+
+      s.public_ports.map(p=>`<tr><td class="num"><b>${p.port}</b></td>
+        <td class="mono">${esc(p.addr)}</td>
+        <td>${esc(p.name||"—")}</td></tr>`).join("")+'</tbody></table>'
+      :'<span style="color:var(--goodtext)">no ports accept connections from the network</span>';
+    const fl=s.failed_logins;
+    $("#secLoginMeta").textContent=fl.readable
+      ?`— ${fl.total} in the last ${fl.days} days`:"— journal not readable";
+    $("#secLogins").innerHTML=!fl.readable
+      ?'<span class="muted">reading the system journal needs to be in the '+
+       '<span class="mono">adm</span> or <span class="mono">systemd-journal</span> group</span>'
+      :(fl.top.length?'<table><tbody>'+fl.top.map(t=>
+        `<tr><td class="mono">${esc(t.source)}</td>
+         <td class="num">${t.count}</td></tr>`).join("")+'</tbody></table>'
+        :'<span style="color:var(--goodtext)">no failed logins 🎉</span>');
+    $("#secAdmins").innerHTML=
+      (s.admins.length?s.admins.map(g=>
+        `<div style="padding:3px 0"><b>${esc(g.group)}</b>: `+
+        g.members.map(m=>`<span class="pill">${esc(m)}</span>`).join(" ")+'</div>').join("")
+        :'<span class="muted">no admin groups found</span>')+
+      `<div style="margin-top:8px">Automatic security updates: ${
+        s.auto_updates===true?'<b style="color:var(--goodtext)">on</b>'
+        :s.auto_updates===false?'<b style="color:var(--serious)">off</b>'
+        :'<span class="muted">not applicable</span>'}</div>`;
+  }catch(e){body.innerHTML=`<span class="muted">${esc(e.message)}</span>`;}
+}
+$("#secReload")&&($("#secReload").onclick=loadSecurity);
+
+/* ---- fleet: other Perch instances, read-only ---- */
+let fleetHosts=[];
+async function loadFleet(){
+  try{
+    fleetHosts=(await api("/api/fleetconfig")).hosts;renderFleetHosts();
+  }catch(e){}
+  const body=$("#fleetBody");if(!body)return;
+  if(!fleetHosts.length){
+    $("#fleetMeta").textContent="";
+    body.innerHTML='<span class="muted">no other machines configured yet — '+
+      'add one below</span>';return;}
+  body.textContent="polling…";
+  try{
+    const f=await api("/api/fleet");
+    $("#fleetMeta").textContent=`— ${f.reachable}/${f.configured} reachable`;
+    body.innerHTML='<table><thead><tr><th>Machine</th><th class="num">CPU</th>'+
+      '<th class="num">Memory</th><th class="num">Temp</th><th class="num">Uptime</th>'+
+      '<th>Status</th></tr></thead><tbody>'+
+      f.hosts.map(h=>`<tr>
+        <td><b>${esc(h.name)}</b>
+          <div class="mono muted" style="font-size:10.5px">${esc(h.hostname||h.url)}</div></td>
+        <td class="num">${h.ok&&h.cpu!=null?h.cpu.toFixed(0)+"%":"—"}</td>
+        <td class="num">${h.ok&&h.mem!=null?h.mem.toFixed(0)+"%":"—"}</td>
+        <td class="num">${h.ok&&h.temp?h.temp.toFixed(0)+"°":"—"}</td>
+        <td class="num">${h.ok&&h.uptime?fmtDur(h.uptime):"—"}</td>
+        <td>${h.ok?'🟢 up':'<span style="color:var(--crit)">🔴 '+esc(h.error||"unreachable")+'</span>'}</td>
+      </tr>`).join("")+'</tbody></table>';
+  }catch(e){body.innerHTML=`<span class="muted">${esc(e.message)}</span>`;}
+}
+function renderFleetHosts(){
+  $("#fleetHosts").innerHTML=fleetHosts.map((h,i)=>`
+    <div class="row" style="margin-bottom:6px">
+      <input type="text" class="flName" data-i="${i}" value="${esc(h.name||"")}"
+        placeholder="name" style="width:140px">
+      <input type="text" class="flUrl mono" data-i="${i}" value="${esc(h.url||"")}"
+        placeholder="http://10.0.0.5:9080" style="flex:1;min-width:180px">
+      <input type="password" class="flTok mono" data-i="${i}" value=""
+        placeholder="${h.has_token?"token saved — blank keeps it":"token"}"
+        style="width:170px">
+      <span class="hint" data-fldel="${i}" style="color:var(--crit);cursor:pointer">✕</span>
+    </div>`).join("")||'<span class="muted" style="font-size:12px">no hosts</span>';
+  $("#fleetHosts").querySelectorAll("[data-fldel]").forEach(el=>el.onclick=()=>{
+    collectFleet();fleetHosts.splice(+el.dataset.fldel,1);renderFleetHosts();});
+}
+function collectFleet(){
+  const g=c=>[...document.querySelectorAll(c)];
+  fleetHosts=g(".flName").map((n,i)=>({name:n.value.trim(),
+    url:g(".flUrl")[i].value.trim(),token:g(".flTok")[i].value.trim(),
+    has_token:fleetHosts[i]&&fleetHosts[i].has_token}));
+}
+$("#fleetAdd")&&($("#fleetAdd").onclick=()=>{collectFleet();
+  fleetHosts.push({name:"",url:"",token:""});renderFleetHosts();});
+$("#fleetSave")&&($("#fleetSave").onclick=async()=>{
+  collectFleet();
+  try{const r=await api("/api/fleetconfig",{method:"POST",
+    body:JSON.stringify({hosts:fleetHosts.filter(h=>h.url)})});
+    fleetHosts=r.hosts;renderFleetHosts();
+    $("#fleetStat").textContent=`saved ${r.hosts.length} host(s) ✓`;
+    loadFleet();}
+  catch(e){$("#fleetStat").textContent="";toast(e.message,false);}});
+$("#fleetReload")&&($("#fleetReload").onclick=loadFleet);
+
+/* ---- keyboard shortcut sheet ---- */
+const KEY_HELP=[
+  ["Anywhere",[["Ctrl+K","Command palette — jump to a tab, run an action, find a file"],
+    ["Ctrl+I","Open or close the assistant"],
+    ["?","This list"],["Esc","Close whatever is open"]]],
+  ["Terminal",[["Ctrl+Shift+T","New tab"],["Ctrl+Shift+E","Split right"],
+    ["Ctrl+Shift+O","Split down"],["Ctrl+Shift+W","Close pane"],
+    ["Ctrl+Shift+= / -","Font size"],["F11","Fullscreen"]]],
+  ["Assistant",[["Enter","Send"],["Shift+Enter","Newline"]]],
+];
+function keyHelpOpen(){
+  $("#keyHelpBody").innerHTML=KEY_HELP.map(([group,rows])=>
+    `<h3>${esc(group)}</h3>`+rows.map(([k,what])=>
+      `<div class="krow"><span>${esc(what)}</span><kbd>${esc(k)}</kbd></div>`).join("")).join("");
+  $("#keyHelp").classList.add("open");
+}
+function keyHelpClose(){$("#keyHelp").classList.remove("open");}
+$("#keyHelpClose")&&($("#keyHelpClose").onclick=keyHelpClose);
+$("#keyHelp")&&($("#keyHelp").onclick=e=>{if(e.target.id==="keyHelp")keyHelpClose();});
+document.addEventListener("keydown",e=>{
+  const t=e.target.tagName;
+  if(e.key==="?"&&t!=="INPUT"&&t!=="TEXTAREA"&&!e.ctrlKey&&!e.metaKey){
+    e.preventDefault();
+    $("#keyHelp").classList.contains("open")?keyHelpClose():keyHelpOpen();return;}
+  if(e.key==="Escape"&&$("#keyHelp").classList.contains("open"))keyHelpClose();
+});
+
+/* ---- history range + export ---- */
+let monRange="24h";
+async function loadTrend(){
+  try{
+    const t=await api("/api/trend?range="+encodeURIComponent(monRange));
+    $("#monRangeNote").textContent=t.resolution==="hour"
+      ?`— hourly averages, ${t.rows.length} point${t.rows.length===1?"":"s"}`
+      :`— 1-minute samples, ${t.rows.length} point${t.rows.length===1?"":"s"}`;
+    drawMonChart(t.rows);
+  }catch(e){toast(e.message,false);}
+}
+$("#monRange")&&$("#monRange").querySelectorAll("[data-range]").forEach(b=>
+  b.onclick=()=>{
+    $("#monRange").querySelectorAll("button").forEach(x=>x.classList.remove("on"));
+    b.classList.add("on");monRange=b.dataset.range;loadTrend();});
+$("#monExport")&&($("#monExport").onclick=()=>{
+  const a=document.createElement("a");
+  a.href="/api/trendcsv?range="+encodeURIComponent(monRange)+"&t="+TOKEN;
+  a.download=`perch-history-${monRange}.csv`;
+  document.body.appendChild(a);a.click();a.remove();
+  toast("history exported");});
+
+/* ---- periodic digest ---- */
+async function loadDigest(){
+  try{
+    const d=await api("/api/digest");
+    if(!$("#dgDay").options.length){
+      $("#dgDay").innerHTML=d.days.map((n,i)=>`<option value="${i}">${esc(n)}</option>`).join("");
+      $("#dgHour").innerHTML=Array.from({length:24},(_,h)=>
+        `<option value="${h}">${String(h).padStart(2,"0")}:00</option>`).join("");
+    }
+    $("#dgOn").checked=!!d.cfg.enabled;
+    $("#dgDay").value=d.cfg.day;$("#dgHour").value=d.cfg.hour;
+    $("#dgPreview").textContent=d.preview;
+    $("#dgStat").textContent=d.last?"last sent "+ago(d.last):"never sent";
+  }catch(e){}
+}
+async function saveDigest(){
+  collectChannels();
+  ntCfg.digest={enabled:$("#dgOn").checked,day:+$("#dgDay").value,
+    hour:+$("#dgHour").value};
+  await api("/api/notifyconfig",{method:"POST",body:JSON.stringify(ntCfg)});
+}
+$("#dgSave")&&($("#dgSave").onclick=async()=>{
+  try{await saveDigest();$("#dgStat").textContent="saved ✓";toast("digest schedule saved");}
+  catch(e){toast(e.message,false);}});
+$("#dgTest")&&($("#dgTest").onclick=async()=>{
+  try{const r=await api("/api/digestsend",{method:"POST",body:"{}"});
+    $("#dgPreview").textContent=r.text;toast("digest sent to your channels");}
+  catch(e){toast(e.message,false);}});
 
 /* ---- alert channels ---- */
 let ntCfg={desktop:true,channels:[]};

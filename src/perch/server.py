@@ -1006,6 +1006,134 @@ def firewall_rules_job():
     return start_job(argv, title, privileged=True)
 
 
+# ---- security overview ----
+# Nothing here is new data collection; it assembles what Perch already knows
+# (exposure, firewall, security updates) with a few cheap reads, because
+# "is this machine exposed?" is a question no single existing tab answers.
+
+SSHD_FLAGS = {
+    "permitrootlogin": ("yes", "root can log in over SSH"),
+    "passwordauthentication": ("yes", "SSH accepts passwords, not just keys"),
+    "permitemptypasswords": ("yes", "SSH accepts empty passwords"),
+}
+
+
+def _sshd_findings():
+    path = "/etc/ssh/sshd_config"
+    if not os.path.exists(path):
+        return []          # no SSH server installed — nothing to say
+    out = []
+    try:
+        with open(path, errors="replace") as f:
+            for line in f:
+                line = line.split("#", 1)[0].strip()
+                if not line:
+                    continue
+                parts = line.split(None, 1)
+                if len(parts) != 2:
+                    continue
+                key, val = parts[0].lower(), parts[1].strip().lower()
+                bad, why = SSHD_FLAGS.get(key, (None, None))
+                if bad and val.startswith(bad):
+                    out.append({"sev": "warn", "title": f"{parts[0]} {parts[1]}",
+                                "detail": why})
+    except OSError:
+        return [{"sev": "info", "title": "sshd_config unreadable",
+                 "detail": "cannot check SSH settings without permission"}]
+    return out
+
+
+def _failed_logins(days=7):
+    """Failed SSH/sudo attempts from the journal, bucketed by source."""
+    since = f"-{max(1, int(days))}d"
+    r = _run(["journalctl", "--system", "--since", since, "--no-pager",
+              "-o", "cat", "-g",
+              "Failed password|authentication failure|Invalid user"],
+             capture_output=True, text=True, timeout=20)
+    if r.returncode != 0:
+        return {"readable": False, "total": 0, "top": []}
+    counts = {}
+    for line in r.stdout.splitlines():
+        m = re.search(r"from ([0-9a-fA-F:.]+)", line)
+        who = m.group(1) if m else "unknown source"
+        counts[who] = counts.get(who, 0) + 1
+    top = sorted(counts.items(), key=lambda kv: -kv[1])[:8]
+    return {"readable": True, "total": sum(counts.values()),
+            "top": [{"source": k, "count": v} for k, v in top], "days": days}
+
+
+def _admin_users():
+    out = []
+    for group in ("sudo", "wheel", "admin"):
+        r = _run(["getent", "group", group], capture_output=True, text=True,
+                 timeout=8)
+        if r.returncode == 0 and r.stdout.strip():
+            members = r.stdout.strip().split(":")[-1]
+            if members:
+                out.append({"group": group,
+                            "members": [m for m in members.split(",") if m]})
+    return out
+
+
+def _auto_updates_on():
+    try:
+        with open("/etc/apt/apt.conf.d/20auto-upgrades") as f:
+            body = f.read()
+        return '"1"' in body and "Unattended-Upgrade" in body
+    except OSError:
+        return None          # not apt, or not configured
+
+
+def security_report():
+    net = net_ports()
+    public = [p for p in net["listen"] if p["public"]]
+    fw = firewall_status()
+    sec_updates = 0
+    try:
+        sec_updates = pkg_updates().get("security", 0)
+    except Exception:  # noqa: BLE001
+        pass
+    findings = []
+    if public:
+        findings.append({
+            "sev": "warn",
+            "title": f"{len(public)} port(s) reachable from the network",
+            "detail": ", ".join(str(p["port"]) for p in public[:10])})
+    if fw.get("ufw_enabled") is False:
+        findings.append({"sev": "crit", "title": "Firewall is off",
+                         "detail": "ufw is installed but not enabled — inbound "
+                                   "ports are not filtered"})
+    elif not fw.get("any"):
+        findings.append({"sev": "info", "title": "No firewall installed",
+                         "detail": "looked for ufw, firewalld and nftables"})
+    if sec_updates:
+        findings.append({"sev": "crit",
+                         "title": f"{sec_updates} security update(s) pending",
+                         "detail": "apply them from the Updates tab"})
+    findings += _sshd_findings()
+    auto = _auto_updates_on()
+    if auto is False:
+        findings.append({"sev": "info", "title": "Automatic updates are off",
+                         "detail": "unattended-upgrades is installed but not "
+                                   "enabled"})
+    logins = _failed_logins()
+    if logins["readable"] and logins["total"] > 20:
+        findings.append({
+            "sev": "warn",
+            "title": f"{logins['total']} failed logins in the last "
+                     f"{logins['days']} days",
+            "detail": "top source: " + (logins["top"][0]["source"]
+                                        if logins["top"] else "unknown")})
+    order = {"crit": 0, "warn": 1, "info": 2}
+    findings.sort(key=lambda f: order.get(f["sev"], 3))
+    return {"findings": findings, "public_ports": public[:20],
+            "firewall": fw, "security_updates": sec_updates,
+            "failed_logins": logins, "admins": _admin_users(),
+            "auto_updates": auto,
+            "score": max(0, 100 - sum({"crit": 25, "warn": 10, "info": 3}
+                                      .get(f["sev"], 0) for f in findings))}
+
+
 # ---- disk health ----
 
 def disk_health():
@@ -2128,12 +2256,13 @@ def mon_save(new):
 
 CUSTOM_FILE = os.path.join(CFG_DIR, "customrules.json")
 CUSTOM_MAX = 24
-CUSTOM_KINDS = ("unit", "port", "process", "path")
+CUSTOM_KINDS = ("unit", "port", "process", "path", "backup")
 CUSTOM_LABELS = {
     "unit": "systemd user unit is not running",
     "port": "nothing is listening on port",
     "process": "no running process matches",
     "path": "folder is larger than (GB)",
+    "backup": "last backup is older than (days)",
 }
 
 
@@ -2143,7 +2272,7 @@ def _custom_clean(r):
     if kind not in CUSTOM_KINDS:
         raise ValueError("unknown rule type")
     target = str(r.get("target", "")).strip()
-    if not target:
+    if not target and kind != "backup":
         raise ValueError("rule needs something to watch")
     if kind == "unit":
         if not SVC_RE.fullmatch(target):
@@ -2157,6 +2286,8 @@ def _custom_clean(r):
             raise ValueError("process pattern is too long")
     elif kind == "path":
         target = os.path.realpath(os.path.expanduser(target))
+    elif kind == "backup":
+        target = ""          # there is only one backup config to watch
     value = r.get("value", 0)
     try:
         value = float(value or 0)
@@ -2247,6 +2378,18 @@ def custom_check(rule):
         if size > limit * (1024 ** 3):
             return (f"{rule['name']} — {target} is {fmt_bytes(size)}, "
                     f"over the {limit:g} GB limit")
+    elif kind == "backup":
+        limit = rule["value"] or 7
+        state = backup_get()
+        if not state.get("sources"):
+            return None                     # no backup configured to be stale
+        last = (state.get("last") or {}).get("t")
+        if not last:
+            return f"{rule['name']} — backup is configured but has never run"
+        age = (time.time() - float(last)) / 86400
+        if age > limit:
+            return (f"{rule['name']} — last backup was {age:.1f} days ago, "
+                    f"over the {limit:g} day limit")
     return None
 
 
@@ -2397,6 +2540,11 @@ def notify_save(body):
     if "channels" in body:
         cfg["channels"] = [c for c in body["channels"]
                            if c.get("type") and c.get("url")][:12]
+    if "digest" in body:
+        d = body["digest"] or {}
+        cfg["digest"] = {"enabled": bool(d.get("enabled")),
+                         "day": max(0, min(6, int(d.get("day", 0) or 0))),
+                         "hour": max(0, min(23, int(d.get("hour", 9) or 0)))}
     atomic_write(_notify_file(), json.dumps(cfg))
     os.chmod(_notify_file(), 0o600)
     return cfg
@@ -2439,6 +2587,125 @@ def dispatch(title, msg, critical=True):
         if ch.get("enabled", True):
             threading.Thread(target=_post_channel, args=(ch, title, msg),
                              daemon=True).start()
+
+
+# ---- periodic digest ----
+# The channels above only ever speak when something is wrong, which means a
+# healthy machine is indistinguishable from a broken notifier. A digest makes
+# the same plumbing say something on a schedule.
+
+DIGEST_STATE = os.path.join(MON_DIR, "digest-state.json")
+DIGEST_DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+               "Saturday", "Sunday")
+
+
+def digest_cfg():
+    cfg = notify_cfg().get("digest") or {}
+    return {"enabled": bool(cfg.get("enabled")),
+            "day": max(0, min(6, int(cfg.get("day", 0) or 0))),
+            "hour": max(0, min(23, int(cfg.get("hour", 9) or 0)))}
+
+
+def _digest_last():
+    try:
+        with open(DIGEST_STATE) as f:
+            return float(json.load(f).get("t", 0))
+    except (OSError, ValueError, TypeError):
+        return 0.0
+
+
+def digest_text(days=7):
+    """A plain-language summary of the last week, built from what we already
+    store — no new collection."""
+    span = days * 86400
+    cutoff = time.time() - span
+    rows = [r for r in _tail_jsonl(HOURLY_FILE, HOURLY_KEEP)
+            if r.get("t", 0) >= cutoff]
+    lines = []
+    if rows:
+        def avg(key):
+            vals = [r[key] for r in rows if r.get(key) is not None]
+            return sum(vals) / len(vals) if vals else None
+        cpu, mem = avg("cpu"), avg("mem")
+        if cpu is not None:
+            lines.append(f"CPU averaged {cpu:.0f}%, memory {mem:.0f}%.")
+        disks = [r["disk"] for r in rows if r.get("disk") is not None]
+        if len(disks) > 1:
+            delta = disks[-1] - disks[0]
+            way = "up" if delta >= 0 else "down"
+            lines.append(f"Disk is {disks[-1]:.0f}% full, {way} "
+                         f"{abs(delta):.1f} points over the period.")
+    else:
+        lines.append("Not enough history yet for trends.")
+    fired = [e for e in _tail_jsonl(ALERTS_FILE, 1000)
+             if e.get("t", 0) >= cutoff]
+    if fired:
+        kinds = {}
+        for e in fired:
+            kinds[e.get("rule", "?")] = kinds.get(e.get("rule", "?"), 0) + 1
+        top = ", ".join(f"{k} ×{v}" for k, v in
+                        sorted(kinds.items(), key=lambda kv: -kv[1])[:4])
+        lines.append(f"{len(fired)} alert(s) fired: {top}.")
+    else:
+        lines.append("No alerts fired.")
+    try:
+        u = pkg_updates()
+        if u.get("count"):
+            lines.append(f"{u['count']} package update(s) pending"
+                         + (f", {u['security']} of them security."
+                            if u.get("security") else "."))
+        else:
+            lines.append("Everything is up to date.")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        b = backup_get()
+        last = (b.get("last") or {}).get("t")
+        if b.get("sources"):
+            lines.append(f"Last backup: {_ago_words(last)}." if last
+                         else "Backup is configured but has never run.")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        up = time.time() - BOOT
+        lines.append(f"Up {up / 86400:.1f} days.")
+    except Exception:  # noqa: BLE001
+        pass
+    return "\n".join(lines)
+
+
+def _ago_words(ts):
+    if not ts:
+        return "never"
+    secs = max(0, time.time() - float(ts))
+    if secs < 3600:
+        return f"{secs / 60:.0f} minutes ago"
+    if secs < 86400:
+        return f"{secs / 3600:.0f} hours ago"
+    return f"{secs / 86400:.0f} days ago"
+
+
+def digest_send(mark=True):
+    body = digest_text()
+    dispatch(f"Perch weekly digest — {os.uname().nodename}", body,
+             critical=False)
+    if mark:
+        os.makedirs(MON_DIR, exist_ok=True)
+        atomic_write(DIGEST_STATE, json.dumps({"t": time.time()}))
+    return {"ok": True, "text": body}
+
+
+def digest_tick():
+    """Send at most one digest per scheduled slot; checked once a minute."""
+    cfg = digest_cfg()
+    if not cfg["enabled"]:
+        return
+    now = time.localtime()
+    if now.tm_wday != cfg["day"] or now.tm_hour != cfg["hour"]:
+        return
+    if time.time() - _digest_last() < 20 * 3600:     # already sent this slot
+        return
+    digest_send()
 
 
 def notify_test():
@@ -2526,10 +2793,104 @@ def monitor_tick(entry):
                                 "disk": round(worst, 1)}) + "\n")
         _prune_jsonl(MINUTES_FILE, 4000)
         _prune_jsonl(ALERTS_FILE, 1000)
+        try:
+            _roll_hour(now)
+        except Exception:  # noqa: BLE001 — a bad rollup must not stop sampling
+            pass
         # custom rules shell out (systemctl, folder sizing), so once a minute
         # on the sampler thread rather than on every 2 s tick
         if not alerts_paused():
             custom_tick()
+        try:
+            digest_tick()
+        except Exception:  # noqa: BLE001 — a failed digest must not stop sampling
+            pass
+
+
+# ---- long-term history: hourly rollups of the minute samples ----
+# Minute samples answer "what is happening"; they are pruned after a few days.
+# Rolling each finished hour into one row answers "is this normal for a
+# Tuesday", which is the question an alert on its own can never settle.
+
+HOURLY_FILE = os.path.join(MON_DIR, "history-hourly.jsonl")
+HOURLY_KEEP = 24 * 120                      # ~120 days
+HISTORY_RANGES = {"24h": 86400, "7d": 7 * 86400,
+                  "30d": 30 * 86400, "90d": 90 * 86400}
+
+
+def _roll_hour(now):
+    """Roll every finished hour the minute file still covers and that hasn't
+    been rolled yet. Written as a catch-up rather than "roll the last hour" so
+    it backfills on first run and after the machine has been off."""
+    hour = int(now // 3600) * 3600
+    done = set()
+    try:
+        with open(HOURLY_FILE) as f:
+            for line in f:
+                try:
+                    done.add(json.loads(line).get("t"))
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+    buckets = {}
+    for r in _tail_jsonl(MINUTES_FILE, 6000):
+        t = r.get("t", 0)
+        bucket = int(t // 3600) * 3600
+        if bucket >= hour or bucket in done:
+            continue                        # current hour, or already rolled
+        buckets.setdefault(bucket, []).append(r)
+    if not buckets:
+        return
+
+    def agg(rows, key, how):
+        vals = [r[key] for r in rows if r.get(key) is not None]
+        if not vals:
+            return None
+        return (round(sum(vals) / len(vals), 1) if how == "avg"
+                else round(max(vals), 1))
+
+    os.makedirs(MON_DIR, exist_ok=True)
+    with open(HOURLY_FILE, "a") as f:
+        for bucket in sorted(buckets):
+            rows = buckets[bucket]
+            f.write(json.dumps({
+                "t": bucket, "n": len(rows),
+                "cpu": agg(rows, "cpu", "avg"), "cpu_max": agg(rows, "cpu", "max"),
+                "mem": agg(rows, "mem", "avg"), "mem_max": agg(rows, "mem", "max"),
+                "temp": agg(rows, "temp", "max"), "disk": agg(rows, "disk", "max"),
+                "batt": agg(rows, "batt", "avg")}) + "\n")
+    _prune_jsonl(HOURLY_FILE, HOURLY_KEEP)
+
+
+def history_series(rng="24h"):
+    """Minute resolution for a day, hourly beyond it — same row shape either way."""
+    span = HISTORY_RANGES.get(rng, 86400)
+    cutoff = time.time() - span
+    if span <= 86400:
+        rows = [r for r in _tail_jsonl(MINUTES_FILE, 1600)
+                if r.get("t", 0) >= cutoff]
+        return {"range": rng, "resolution": "minute", "rows": rows}
+    rows = [r for r in _tail_jsonl(HOURLY_FILE, HOURLY_KEEP)
+            if r.get("t", 0) >= cutoff]
+    return {"range": rng, "resolution": "hour", "rows": rows}
+
+
+HISTORY_CSV_COLS = ("t", "cpu", "cpu_max", "mem", "mem_max", "temp", "disk",
+                    "batt")
+
+
+def history_csv(rng="24h"):
+    import datetime
+    data = history_series(rng)
+    out = ["time," + ",".join(HISTORY_CSV_COLS[1:])]
+    for r in data["rows"]:
+        stamp = datetime.datetime.fromtimestamp(r.get("t", 0)).isoformat(
+            timespec="seconds")
+        out.append(stamp + "," + ",".join(
+            "" if r.get(c) is None else str(r.get(c))
+            for c in HISTORY_CSV_COLS[1:]))
+    return "\n".join(out) + "\n"
 
 
 def _prune_jsonl(path, keep):
@@ -3015,6 +3376,101 @@ def perch_restart():
         start_new_session=True,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return {"ok": True, "restarting_in": 2}
+
+
+# ------------------------------------------------------------- fleet --------
+# Perch already exposes a token-authenticated read API, so a second Perch is
+# all the agent a fleet view needs — no daemon, no new protocol. Strictly
+# read-only: this polls other instances, it never asks them to do anything.
+
+FLEET_FILE = os.path.join(CFG_DIR, "fleet.json")
+FLEET_MAX = 24
+FLEET_TIMEOUT = 6
+
+
+def _fleet_clean(h):
+    name = str(h.get("name", "")).strip()[:40]
+    url = str(h.get("url", "")).strip().rstrip("/")
+    if not re.match(r"^https?://[\w.\-\[\]]+(:\d+)?$", url):
+        raise ValueError(f"'{url}' is not a host URL like http://10.0.0.5:9080")
+    token = str(h.get("token", "")).strip()
+    return {"name": name or url, "url": url, "token": token}
+
+
+def fleet_cfg():
+    try:
+        with open(FLEET_FILE) as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return []
+    out = []
+    for h in (saved if isinstance(saved, list) else [])[:FLEET_MAX]:
+        try:
+            out.append(_fleet_clean(h))
+        except ValueError:
+            continue
+    return out
+
+
+def fleet_save(hosts):
+    if not isinstance(hosts, list):
+        raise ValueError("expected a list of hosts")
+    if len(hosts) > FLEET_MAX:
+        raise ValueError(f"at most {FLEET_MAX} hosts")
+    existing = {h["url"]: h["token"] for h in fleet_cfg()}
+    cleaned = []
+    for h in hosts:
+        c = _fleet_clean(h)
+        if not c["token"]:                  # blank means "keep what's stored"
+            c["token"] = existing.get(c["url"], "")
+        cleaned.append(c)
+    os.makedirs(CFG_DIR, exist_ok=True)
+    atomic_write(FLEET_FILE, json.dumps(cleaned))
+    os.chmod(FLEET_FILE, 0o600)             # it holds other machines' tokens
+    return fleet_public()
+
+
+def fleet_public():
+    """Config for the browser — never hand tokens back out."""
+    return [{"name": h["name"], "url": h["url"], "has_token": bool(h["token"])}
+            for h in fleet_cfg()]
+
+
+def _fleet_poll(host, out):
+    import urllib.request as ur
+    entry = {"name": host["name"], "url": host["url"], "ok": False}
+    try:
+        req = ur.Request(host["url"] + "/api/overview",
+                         headers={"X-Token": host["token"],
+                                  "User-Agent": "perch-fleet"})
+        with ur.urlopen(req, timeout=FLEET_TIMEOUT) as r:
+            o = json.load(r)
+        entry.update(ok=True, hostname=o.get("hostname", ""),
+                     cpu=o.get("cpu"), mem=(o.get("mem") or {}).get("percent"),
+                     uptime=o.get("uptime"), nproc=o.get("nproc"),
+                     os=o.get("os", ""),
+                     temp=max((t.get("c", 0) for t in o.get("temps", [])),
+                              default=None))
+    except Exception as e:  # noqa: BLE001 — one unreachable host is normal
+        entry["error"] = str(e)[:120]
+    out.append(entry)
+
+
+def fleet_status():
+    hosts = fleet_cfg()
+    if not hosts:
+        return {"hosts": [], "configured": 0}
+    out, threads = [], []
+    for h in hosts:
+        t = threading.Thread(target=_fleet_poll, args=(h, out), daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join(timeout=FLEET_TIMEOUT + 2)
+    order = {h["url"]: i for i, h in enumerate(hosts)}
+    out.sort(key=lambda e: order.get(e["url"], 99))
+    return {"hosts": out, "configured": len(hosts),
+            "reachable": sum(1 for e in out if e["ok"])}
 
 
 def capabilities():
@@ -4771,6 +5227,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(home_layout())
             if route == "/api/about":
                 return self._json(about_info())
+            if route == "/api/security":
+                return self._json(security_report())
+            if route == "/api/trend":
+                return self._json(history_series(qs.get("range", ["24h"])[0]))
+            if route == "/api/trendcsv":
+                rng = qs.get("range", ["24h"])[0]
+                self._send(200, history_csv(rng), "text/csv")
+                return
+            if route == "/api/fleet":
+                return self._json(fleet_status())
+            if route == "/api/fleetconfig":
+                return self._json({"hosts": fleet_public()})
+            if route == "/api/digest":
+                return self._json({"cfg": digest_cfg(),
+                                   "preview": digest_text(),
+                                   "last": _digest_last(),
+                                   "days": DIGEST_DAYS})
             if route == "/api/perchupdate":
                 return self._json(perch_update_check())
             if route == "/api/installed":
@@ -4955,6 +5428,16 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/customrules":
                 return self._json({"ok": True,
                                    "rules": custom_save(body.get("rules", []))})
+            if route == "/api/customtest":
+                rule = _custom_clean(body.get("rule") or {})
+                msg = custom_check(rule)
+                return self._json({"ok": True, "breached": bool(msg),
+                                   "message": msg or
+                                   f"{rule['name']} looks fine right now"})
+            if route == "/api/fleetconfig":
+                return self._json({"hosts": fleet_save(body.get("hosts", []))})
+            if route == "/api/digestsend":
+                return self._json(digest_send(mark=False))
             if route == "/api/homelayout":
                 return self._json(home_layout_save(body))
             if route == "/api/firewallrules":

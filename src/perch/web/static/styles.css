@@ -261,6 +261,35 @@ input[type=text]:focus,input[type=password]:focus,input[type=search]:focus{
 .name{cursor:pointer}
 .name:hover{text-decoration:underline}
 .muted{color:var(--muted)}
+/* ---- keyboard shortcut sheet ---- */
+#keyHelp{display:none;position:fixed;inset:0;z-index:12;
+  background:rgba(8,10,20,.45);backdrop-filter:blur(3px);
+  -webkit-backdrop-filter:blur(3px);padding-top:10vh;justify-content:center}
+#keyHelp.open{display:flex}
+#keyHelpBox{width:min(560px,94vw);height:fit-content;max-height:76vh;
+  display:flex;flex-direction:column;overflow:hidden;
+  background:var(--glass-strong);backdrop-filter:var(--blur);
+  -webkit-backdrop-filter:var(--blur);
+  border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-lg)}
+#keyHelpBox header{display:flex;gap:10px;align-items:center;padding:13px 16px;
+  border-bottom:1px solid var(--border)}
+#keyHelpBody{overflow:auto;padding:8px 16px 16px}
+#keyHelpBody h3{font-size:11px;text-transform:uppercase;letter-spacing:.1em;
+  color:var(--muted);margin:14px 0 6px}
+#keyHelpBody .krow{display:flex;gap:10px;align-items:center;padding:4px 0;
+  border-bottom:1px solid var(--grid);font-size:13px}
+#keyHelpBody .krow:last-child{border-bottom:0}
+#keyHelpBody .krow span{flex:1}
+kbd{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;
+  background:var(--track);border:1px solid var(--border);border-bottom-width:2px;
+  border-radius:6px;padding:1px 6px;white-space:nowrap}
+/* ---- security findings ---- */
+.finding{display:flex;gap:10px;align-items:flex-start;padding:7px 0;
+  border-bottom:1px solid var(--grid)}
+.finding:last-child{border-bottom:0}
+.finding .fi{font-size:15px;line-height:1.3}
+.finding .ft{font-weight:600;font-size:13px}
+.finding .fd{color:var(--muted);font-size:12px}
 /* ---- assistant: floating action button + docked chat panel ---- */
 #aiFab{position:fixed;right:22px;bottom:22px;z-index:7;
   width:54px;height:54px;border-radius:50%;border:none;cursor:pointer;
