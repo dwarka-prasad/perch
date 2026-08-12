@@ -519,6 +519,39 @@ try {
       throw new Error(`query result missing (status: ${stat}, table: ${table})`);
   });
 
+  await check("traffic tab shows connections and interface rates", async () => {
+    const out = await page.eval(`
+      goTab("traffic"); await new Promise(r=>setTimeout(r,3500));
+      const conn=document.querySelectorAll("#connTable tbody tr").length;
+      const io=document.querySelectorAll("#ioBody tbody tr").length;
+      const meta=document.querySelector("#connMeta").textContent;
+      // the filter narrows to listening sockets only
+      document.querySelector('[data-kind="LISTEN"]').click();
+      const listening=[...document.querySelectorAll("#connTable tbody tr")]
+        .every(r=>/LISTEN|no connections/.test(r.innerText));
+      document.querySelector('[data-kind="all"]').click();
+      return JSON.stringify([conn, io, meta, listening,
+                             !!document.querySelector("#capGo")]);`);
+    const [conn, io, meta, listening, hasCapture] = JSON.parse(out);
+    atLeast(conn, 1, "connection rows");
+    atLeast(io, 1, "interface rows");
+    if (!/total/.test(meta)) throw new Error(`connection meta reads ${meta}`);
+    eq(listening, true, "state filter should leave only listening sockets");
+    eq(hasCapture, true, "capture controls present");
+  });
+
+  await check("capture refuses a filter that smuggles an option", async () => {
+    const r = await fetch(`http://127.0.0.1:${port}/api/capture`, {
+      method: "POST",
+      headers: { "X-Token": token, "Content-Type": "application/json" },
+      body: JSON.stringify({ iface: "any", filter: "port 80 -w /etc/shadow" }),
+    });
+    eq(r.status, 400, "status for an option-smuggling filter");
+    const j = await r.json();
+    if (!/option/i.test(j.error || ""))
+      throw new Error(`unhelpful error: ${j.error}`);
+  });
+
   await check("every tab opens without throwing", async () => {
     const errs = await page.eval(`
       const tabs=[...document.querySelectorAll("nav button[data-tab]")]

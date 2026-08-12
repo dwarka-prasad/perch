@@ -55,6 +55,9 @@ try:
                            _parse_updates, _rows_from, _upd_cache,
                            installed_packages, pkg_install, pkg_search,
                            pkg_updates, upgrade_all)
+    from .traffic import (capture_caps, capture_delete,  # noqa: F401
+                          capture_file, capture_list, capture_read,
+                          capture_start, connections, interfaces_io)
     from .fleet import (FLEET_FILE, FLEET_MAX, FLEET_TIMEOUT,  # noqa: F401
                         _fleet_clean, _fleet_poll, fleet_cfg, fleet_public,
                         fleet_save, fleet_status)
@@ -4394,6 +4397,17 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if route == "/api/fleet":
                 return self._json(fleet_status())
+            if route == "/api/connections":
+                return self._json(connections(
+                    qs.get("resolve", ["0"])[0] == "1"))
+            if route == "/api/netio":
+                return self._json(interfaces_io())
+            if route == "/api/captures":
+                return self._json(capture_list())
+            if route == "/api/capture":
+                return self._json(capture_read(qs.get("name", [""])[0]))
+            if route == "/api/capturefile":
+                return self._raw(capture_file(qs.get("name", [""])[0]))
             if route == "/api/fleetconfig":
                 return self._json({"hosts": fleet_public()})
             if route == "/api/digest":
@@ -4595,6 +4609,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"hosts": fleet_save(body.get("hosts", []))})
             if route == "/api/digestsend":
                 return self._json(digest_send(mark=False))
+            if route == "/api/capture":
+                return self._json(capture_start(
+                    body.get("iface", "any"), body.get("filter", ""),
+                    body.get("packets", 2000), body.get("seconds", 30)))
+            if route == "/api/capturedelete":
+                return self._json(capture_delete(body.get("name", "")))
             if route == "/api/homelayout":
                 return self._json(home_layout_save(body))
             if route == "/api/firewallrules":

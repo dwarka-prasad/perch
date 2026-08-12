@@ -952,3 +952,122 @@ async function loadTools(){
   }catch(e){}
 }
 
+
+/* ---- traffic: live connections, interface rates, packet capture ---- */
+let ioTimer=null,ioPaused=false,connData=null,connKind="all";
+async function loadTraffic(){
+  loadConnections();loadCaptures();
+  clearInterval(ioTimer);
+  await pollIo();
+  ioTimer=setInterval(()=>{
+    if(!ioPaused&&$("#tab-traffic").classList.contains("on"))pollIo();},2000);
+}
+async function pollIo(){
+  try{
+    const d=await api("/api/netio");
+    const rate=v=>v==null?'<span class="muted">—</span>':fmtB(v)+"/s";
+    $("#ioBody").innerHTML='<table><thead><tr><th>Interface</th>'+
+      '<th class="num">↓ in</th><th class="num">↑ out</th>'+
+      '<th class="num">Received</th><th class="num">Sent</th>'+
+      '<th class="num">Errors</th><th class="num">Drops</th></tr></thead><tbody>'+
+      d.interfaces.map(i=>`<tr>
+        <td>${i.up?"🟢":"⚪"} <b>${esc(i.nic)}</b>
+          ${i.speed?`<span class="muted" style="font-size:11px">${i.speed} Mb/s</span>`:""}</td>
+        <td class="num">${rate(i.rx_rate)}</td>
+        <td class="num">${rate(i.tx_rate)}</td>
+        <td class="num muted">${fmtB(i.rx_bytes)}</td>
+        <td class="num muted">${fmtB(i.tx_bytes)}</td>
+        <td class="num${i.rx_err+i.tx_err?' ':''}"${i.rx_err+i.tx_err?' style="color:var(--serious)"':""}>${i.rx_err+i.tx_err}</td>
+        <td class="num"${i.rx_drop+i.tx_drop?' style="color:var(--serious)"':""}>${i.rx_drop+i.tx_drop}</td>
+      </tr>`).join("")+'</tbody></table>';
+    if(!$("#capIface").options.length)
+      $("#capIface").innerHTML='<option value="any">any</option>'+
+        d.interfaces.map(i=>`<option value="${esc(i.nic)}">${esc(i.nic)}</option>`).join("");
+  }catch(e){$("#ioBody").innerHTML='<span class="muted">interface counters unavailable</span>';}
+}
+$("#ioPause")&&($("#ioPause").onclick=()=>{
+  ioPaused=!ioPaused;
+  $("#ioPause").textContent=ioPaused?"▶ Resume":"⏸ Pause";});
+async function loadConnections(){
+  try{
+    connData=await api("/api/connections"+($("#connDns").checked?"?resolve=1":""));
+    renderConnections();
+  }catch(e){toast(e.message,false);}
+}
+function renderConnections(){
+  const d=connData;if(!d)return;
+  const q=($("#connQ").value||"").trim().toLowerCase();
+  const rows=d.connections.filter(c=>
+    (connKind==="all"||c.status===connKind)&&
+    (!q||(c.local+c.remote+(c.process||"")+c.status).toLowerCase().includes(q)));
+  $("#connMeta").textContent=`— ${d.total} total · `+
+    Object.entries(d.states).map(([k,v])=>`${v} ${k.toLowerCase()}`).join(" · ");
+  $("#connTop").innerHTML=d.remotes.length
+    ?'<span class="muted" style="font-size:12px">busiest remotes: </span>'+
+      d.remotes.map(r=>`<span class="pill" style="margin:2px 4px 2px 0">
+        ${esc(r.host||r.ip)} <b>${r.count}</b></span>`).join("")
+    :"";
+  $("#connTable tbody").innerHTML=rows.slice(0,400).map(c=>`<tr>
+    <td>${esc(c.proto)}</td>
+    <td class="mono" style="font-size:11.5px">${esc(c.local)}</td>
+    <td class="mono" style="font-size:11.5px">${esc(c.remote||"—")}</td>
+    <td>${c.status==="ESTABLISHED"?"🟢":c.status==="LISTEN"?"🔵":"⚪"} ${esc(c.status)}</td>
+    <td>${c.process?`<b>${esc(c.process)}</b> <span class="muted mono" style="font-size:11px">${c.pid}</span>`
+      :'<span class="muted">hidden</span>'}</td>
+  </tr>`).join("")||`<tr><td colspan=5 class="muted" style="padding:12px">no connections match</td></tr>`;
+}
+$("#connQ")&&($("#connQ").oninput=renderConnections);
+$("#connReload")&&($("#connReload").onclick=loadConnections);
+$("#connDns")&&($("#connDns").onchange=loadConnections);
+$("#connKind")&&$("#connKind").querySelectorAll("[data-kind]").forEach(b=>b.onclick=()=>{
+  $("#connKind").querySelectorAll("button").forEach(x=>x.classList.remove("on"));
+  b.classList.add("on");connKind=b.dataset.kind;renderConnections();});
+async function loadCaptures(){
+  try{
+    const d=await api("/api/captures");
+    if(!d.tcpdump){
+      $("#capList").innerHTML='<span class="muted" style="font-size:12.5px">'+
+        'tcpdump is not installed — install it from the Packages tab to capture</span>';
+      $("#capGo").disabled=true;return;}
+    $("#capGo").disabled=false;
+    $("#capList").innerHTML=d.captures.length
+      ?'<table><tbody>'+d.captures.map(c=>`<tr>
+        <td class="mono" style="font-size:11.5px">${esc(c.name)}</td>
+        <td class="num">${fmtB(c.size)}</td>
+        <td class="num muted">${ago(c.t)}</td>
+        <td class="num" style="white-space:nowrap">
+          <button class="btn small" data-capread="${esc(c.name)}">View</button>
+          <button class="btn small" data-capdl="${esc(c.name)}">Download</button>
+          <button class="btn small danger" data-capdel="${esc(c.name)}">Delete</button>
+        </td></tr>`).join("")+'</tbody></table>'
+      :'<span class="muted" style="font-size:12.5px">no captures yet</span>';
+    $("#capList").querySelectorAll("[data-capread]").forEach(b=>b.onclick=async()=>{
+      const pre=$("#capOut");pre.style.display="block";pre.textContent="reading…";
+      try{const r=await api("/api/capture?name="+encodeURIComponent(b.dataset.capread));
+        pre.textContent=(r.lines.join("\n")||"(no packets)")+
+          (r.truncated?`\n… ${r.total-r.lines.length} more lines`:"");}
+      catch(e){pre.textContent="";toast(e.message,false);}});
+    $("#capList").querySelectorAll("[data-capdl]").forEach(b=>b.onclick=()=>{
+      const a=document.createElement("a");
+      a.href="/api/capturefile?name="+encodeURIComponent(b.dataset.capdl)+"&t="+TOKEN;
+      a.download=b.dataset.capdl;document.body.appendChild(a);a.click();a.remove();});
+    $("#capList").querySelectorAll("[data-capdel]").forEach(b=>b.onclick=async()=>{
+      if(!confirm(`Delete ${b.dataset.capdel}?`))return;
+      try{await api("/api/capturedelete",{method:"POST",
+        body:JSON.stringify({name:b.dataset.capdel})});loadCaptures();}
+      catch(e){toast(e.message,false);}});
+  }catch(e){$("#capList").innerHTML="";}
+}
+$("#capGo")&&($("#capGo").onclick=async()=>{
+  const secs=$("#capSeconds").value.trim()||"30";
+  if(!confirm(`Capture packets on ${$("#capIface").value} for up to ${secs}s?\n\n`+
+    `This needs admin rights and records everything that crosses the wire — on `+
+    `unencrypted protocols that includes passwords and session tokens.`))return;
+  $("#capStat").textContent="starting…";
+  try{
+    await runJob(api("/api/capture",{method:"POST",body:JSON.stringify({
+      iface:$("#capIface").value,filter:$("#capFilter").value.trim(),
+      packets:+($("#capPackets").value.trim()||2000),seconds:+secs})}));
+    $("#capStat").textContent="done";loadCaptures();}
+  catch(e){$("#capStat").textContent="";toast(e.message,false);}
+});

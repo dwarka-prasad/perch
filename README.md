@@ -122,6 +122,13 @@ step, no cloud.
 
   ![Network — listening ports with Stop and Force buttons, and Perch's own port marked](docs/network-ports.png)
 
+- **Traffic** — who this machine is talking to: live TCP/UDP connections with
+  the owning process, busiest remote addresses, and per-interface in/out rates
+  with error and drop counters — all without privileges. Plus **packet
+  capture** via `tcpdump`, bounded by packet count and duration, saved as a
+  `.pcap` you can read in place or download for Wireshark. Capture needs a
+  password prompt and records everything on the wire, including credentials on
+  unencrypted protocols, so it is always deliberate.
 - **Dev** — Docker containers with live stats, logs, shell, compose control
   and prune, plus **disk usage** showing what images, containers, volumes and
   build cache actually cost and how much a prune would reclaim; systemd user

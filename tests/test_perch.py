@@ -25,6 +25,7 @@ from perch import server as S  # noqa: E402
 from perch import containers as C  # noqa: E402,F401
 from perch import jobs as J  # noqa: E402,F401
 from perch import packages as P  # noqa: E402
+from perch import traffic as T  # noqa: E402
 from perch import util as U  # noqa: E402
 
 
@@ -818,6 +819,192 @@ class PerchVersionAndUpdate(unittest.TestCase):
             self.assertIn("pip", str(cm.exception))
         finally:
             S.perch_install_kind = orig
+
+
+class PacketCaptureGuards(unittest.TestCase):
+    """Capture runs tcpdump as root, so every input is checked before argv."""
+
+    def setUp(self):
+        self.argv = []
+        self._orig = J.start_job
+        J.start_job = lambda argv, title, privileged=False: (
+            self.argv.append((argv, privileged)), {"id": "x"})[1]
+
+    def tearDown(self):
+        J.start_job = self._orig
+
+    def test_interface_name_is_validated(self):
+        for bad in ("eth0; rm -rf /", "../../etc", "a" * 40, "eth0 -w /tmp/x"):
+            with self.assertRaises(ValueError):
+                T.capture_start(iface=bad)
+        self.assertEqual(self.argv, [])
+
+    def test_filter_cannot_smuggle_an_option(self):
+        """getopt permutes, so a trailing -w would override ours — as root."""
+        for bad in ("port 80 -w /etc/shadow", "-i eth0", "tcp --help",
+                    "port 80 -Z root"):
+            with self.assertRaises(ValueError):
+                T.capture_start(bpf=bad)
+        self.assertEqual(self.argv, [])
+
+    def test_ordinary_filters_still_work(self):
+        for good in ("tcp port 443", "portrange 1-1024",
+                     "tcp[tcpflags] & tcp-syn != 0", "host 10.0.0.5 and not port 22"):
+            T.capture_start(bpf=good)
+        self.assertEqual(len(self.argv), 4)
+
+    def test_limits_are_capped_and_privileged(self):
+        T.capture_start(packets=10 ** 9, seconds=10 ** 9)
+        argv, privileged = self.argv[-1]
+        self.assertTrue(privileged, "capture must go through pkexec")
+        script = argv[2]                       # sh -c <script>
+        self.assertIn(f"-c {T.MAX_PACKETS}", script)
+        self.assertIn(f"timeout -s INT {T.MAX_SECONDS + 2}", script)
+        self.assertIn("-Z ", script)           # tcpdump drops privileges
+        self.assertIn("install -m 600", script)
+
+    def test_capture_stages_outside_dot_directories(self):
+        """AppArmor denies tcpdump any path under a dot-dir in $HOME, so the
+        write has to land elsewhere and be moved in afterwards."""
+        T.capture_start()
+        script = self.argv[-1][0][2]
+        written = script.split("-w ")[1].split()[0]
+        self.assertNotIn("/.", written, "tcpdump would be denied this path")
+        self.assertTrue(written.startswith("/tmp/perch-capture-"))
+        self.assertIn(T.CAPTURE_DIR, script, "final file belongs in the cache")
+        self.assertIn("rm -rf", script, "staging directory must be cleaned up")
+
+    def test_non_numeric_limits_rejected(self):
+        with self.assertRaises(ValueError):
+            T.capture_start(packets="lots")
+
+    def test_capture_paths_stay_in_the_capture_directory(self):
+        for bad in ("../../../etc/passwd", "capture-x.pcap/../../x",
+                    "notacapture.txt", ""):
+            with self.assertRaises(ValueError):
+                T.capture_file(bad)
+
+
+class CaptureParsing(unittest.TestCase):
+    """Captures are parsed here, not by tcpdump: AppArmor denies it any path
+    under a dot-directory in $HOME, which is where Perch keeps its state."""
+
+    def setUp(self):
+        os.makedirs(T.CAPTURE_DIR, mode=0o700, exist_ok=True)
+        self.name = "capture-20260101-000000-lo.pcap"
+        self.path = os.path.join(T.CAPTURE_DIR, self.name)
+
+    def tearDown(self):
+        try:
+            os.remove(self.path)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _tcp(sport, dport, flags=0x02):
+        import struct
+        tcp = struct.pack("!HHIIBBHHH", sport, dport, 1, 0, 5 << 4, flags,
+                          8192, 0, 0)
+        ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(tcp), 1, 0, 64, 6,
+                         0, bytes([10, 0, 0, 1]), bytes([10, 0, 0, 2]))
+        return ip + tcp
+
+    def _write(self, packets, link=1, endian="<", pad=b""):
+        import struct
+        with open(self.path, "wb") as f:
+            f.write(struct.pack(endian + "IHHiIII",
+                                0xA1B2C3D4, 2, 4, 0, 0, 65535, link))
+            for i, payload in enumerate(packets):
+                blob = pad + payload
+                f.write(struct.pack(endian + "IIII", 1767225600 + i, 7,
+                                    len(blob), len(blob)))
+                f.write(blob)
+        os.chmod(self.path, 0o600)
+
+    def test_decodes_ethernet_tcp_with_flags(self):
+        eth = b"\x11" * 6 + b"\x22" * 6 + b"\x08\x00"
+        self._write([self._tcp(51000, 443, 0x02),
+                     self._tcp(443, 51000, 0x12)], link=1, pad=eth)
+        out = T.capture_read(self.name)
+        self.assertEqual(out["total"], 2)
+        self.assertIn("tcp 10.0.0.1:51000 > 10.0.0.2:443 [SYN]", out["lines"][0])
+        self.assertIn("[SYN,ACK]", out["lines"][1])
+
+    def test_decodes_linux_cooked_capture(self):
+        """`-i any` records SLL frames, not Ethernet — the common default."""
+        self._write([self._tcp(1234, 80)], link=113, pad=b"\x00" * 16)
+        out = T.capture_read(self.name)
+        self.assertIn("tcp 10.0.0.1:1234 > 10.0.0.2:80", out["lines"][0])
+
+    def test_big_endian_pcap(self):
+        eth = b"\x11" * 6 + b"\x22" * 6 + b"\x08\x00"
+        self._write([self._tcp(22, 51000)], endian=">", pad=eth)
+        self.assertEqual(T.capture_read(self.name)["total"], 1)
+
+    def test_limit_reports_the_full_count(self):
+        eth = b"\x11" * 6 + b"\x22" * 6 + b"\x08\x00"
+        self._write([self._tcp(1000 + i, 80) for i in range(10)], pad=eth)
+        out = T.capture_read(self.name, limit=3)
+        self.assertEqual(len(out["lines"]), 3)
+        self.assertEqual(out["total"], 10)
+        self.assertTrue(out["truncated"])
+
+    def test_pcapng_is_reported_not_crashed(self):
+        with open(self.path, "wb") as f:
+            f.write(b"\x0a\x0d\x0d\x0a" + b"\x00" * 40)   # pcapng magic
+        out = T.capture_read(self.name)
+        self.assertIn("pcapng", out["error"])
+        self.assertEqual(out["lines"], [])
+
+    def test_truncated_file_stops_cleanly(self):
+        eth = b"\x11" * 6 + b"\x22" * 6 + b"\x08\x00"
+        self._write([self._tcp(1, 2)], pad=eth)
+        with open(self.path, "rb") as f:
+            blob = f.read()
+        with open(self.path, "wb") as f:
+            f.write(blob[:-8])          # chop the last packet in half
+        out = T.capture_read(self.name)
+        self.assertEqual(out["total"], 0)
+        self.assertEqual(out["error"], "")
+
+
+class TrafficViews(unittest.TestCase):
+    class _Conn:
+        def __init__(self, status, lport, rip=None, pid=None, kind=1):
+            self.status, self.pid, self.type = status, pid, kind
+            self.family = 2
+            self.laddr = type("A", (), {"ip": "0.0.0.0", "port": lport})()
+            self.raddr = (type("A", (), {"ip": rip, "port": 443})()
+                          if rip else ())
+
+    def test_connections_group_states_and_remotes(self):
+        conns = [self._Conn("ESTABLISHED", 51000, "10.0.0.5"),
+                 self._Conn("ESTABLISHED", 51001, "10.0.0.5"),
+                 self._Conn("LISTEN", 9080),
+                 self._Conn("TIME_WAIT", 51002, "10.0.0.9")]
+        orig = T.__dict__.get("_proc_names")
+        import psutil
+        orig_conns = psutil.net_connections
+        psutil.net_connections = lambda kind=None: conns
+        T._proc_names = lambda pids: {}
+        try:
+            out = T.connections()
+        finally:
+            psutil.net_connections = orig_conns
+            T._proc_names = orig
+        self.assertEqual(out["total"], 4)
+        self.assertEqual(out["states"]["ESTABLISHED"], 2)
+        # only established connections count toward "busiest remote"
+        self.assertEqual(out["remotes"][0], {"ip": "10.0.0.5", "count": 2,
+                                             "host": ""})
+        self.assertEqual(out["connections"][0]["status"], "ESTABLISHED")
+
+    def test_interface_rates_need_two_samples(self):
+        T._io_prev.clear()
+        first = T.interfaces_io()["interfaces"]
+        self.assertTrue(all(i["rx_rate"] is None for i in first),
+                        "no rate is knowable from a single sample")
+        self.assertTrue(all("rx_drop" in i for i in first))
 
 
 class HttpSmoke(unittest.TestCase):

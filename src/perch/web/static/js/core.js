@@ -45,7 +45,7 @@ document.querySelectorAll("nav button[data-tab]").forEach(b=>b.onclick=()=>{
   ({overview:refreshHome,storage:loadStorage,proc:loadProcs,users:loadUsers,
     files:()=>loadFiles(fPath),clean:loadClean,
     search:()=>{$("#sq").focus();searchStatus();},
-    net:loadNet,dev:loadDev,kernel:loadKernel,
+    net:loadNet,traffic:loadTraffic,dev:loadDev,kernel:loadKernel,
     logs:()=>{if(!$("#logView").innerHTML)loadLogs(false);},
     monitor:loadMonitor,security:loadSecurity,fleet:loadFleet,
     updates:loadUpdates,packages:()=>{$("#pkgQ").focus();loadInstalled();},
@@ -209,7 +209,7 @@ const PAL_ITEMS=[
      ["logs","📜 Logs"],["kernel","🧬 Kernel"],["updates","📦 Updates"],
      ["users","👤 Users"],["storage","💾 Storage"],["files","📁 Files"],
      ["search","🔍 Search"],["clean","🧹 Clean up"],["net","🌐 Network"],
-     ["dev","🧰 Dev"],["tools","🔧 Tools"]]
+     ["dev","🧰 Dev"],["tools","🔧 Tools"],["traffic","📡 Traffic"]]
     .map(([t,l])=>({label:l,hint:"tab",act:()=>goTab(t)})),
   {label:"✨ Ask the assistant",hint:"action",act:()=>aiOpen()},
   {label:"🔒 Security overview",hint:"tab",act:()=>goTab("security")},

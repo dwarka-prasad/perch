@@ -34,6 +34,7 @@
     <div class="ngroup" id="ngDev">Developer</div>
     <button data-tab="term">🖥️ Terminal</button>
     <button data-tab="net">🌐 Network</button>
+    <button data-tab="traffic">📡 Traffic</button>
     <button data-tab="dev">🧰 Dev</button>
     <button data-tab="db">🗄️ Database</button>
     <button data-tab="git">🔀 Git</button>
@@ -433,6 +434,58 @@
         <span class="muted" style="font-size:12px">downloads 20 MB from Cloudflare</span>
       </div>
       <div id="speedOut" class="row" style="margin-bottom:0"></div></div>
+  </section>
+
+  <section id="tab-traffic">
+    <div class="panel"><h2>Interfaces <span class="muted">— live rates and error counters</span>
+      <button class="btn small" id="ioPause" style="margin-left:8px">⏸ Pause</button></h2>
+      <div id="ioBody" class="muted" style="font-size:12.5px">…</div></div>
+    <div class="panel"><h2>Connections <span class="muted" id="connMeta"></span>
+      <button class="btn small" id="connReload" style="margin-left:8px">↻</button></h2>
+      <div class="row">
+        <input type="text" id="connQ" placeholder="Filter by address, process or state…"
+          style="flex:1;min-width:220px">
+        <div class="seg" id="connKind">
+          <button data-kind="all" class="on">All</button>
+          <button data-kind="ESTABLISHED">Established</button>
+          <button data-kind="LISTEN">Listening</button>
+        </div>
+        <label class="pill" title="reverse DNS for the busiest remote addresses"><input
+          type="checkbox" id="connDns"> resolve names</label>
+      </div>
+      <div id="connTop" style="margin-bottom:8px"></div>
+      <div style="overflow:auto;max-height:46vh"><table id="connTable">
+        <thead><tr><th>Proto</th><th>Local</th><th>Remote</th><th>State</th>
+        <th>Process</th></tr></thead><tbody></tbody></table></div>
+      <div class="muted" style="font-size:11.5px;margin-top:8px">Read from the
+        kernel socket table — no capture and no privileges. Process names show
+        for your own processes; Linux hides other users' without root.</div></div>
+    <div class="panel"><h2>Packet capture <span class="muted">— tcpdump, saved as a .pcap</span></h2>
+      <div class="row">
+        <span class="muted" style="font-size:12px">interface</span>
+        <select id="capIface" class="btn"></select>
+        <input type="text" id="capFilter" class="mono" style="flex:1;min-width:180px"
+          placeholder="filter, e.g. tcp port 443 and host 10.0.0.5">
+        <span class="muted" style="font-size:12px">stop after</span>
+        <input type="text" id="capPackets" value="2000" style="width:70px;min-width:70px" title="packets">
+        <span class="muted" style="font-size:12px">packets or</span>
+        <input type="text" id="capSeconds" value="30" style="width:60px;min-width:60px" title="seconds">
+        <span class="muted" style="font-size:12px">seconds</span>
+        <button class="btn" id="capGo">● Capture</button>
+        <span class="muted" id="capStat" style="font-size:12px"></span>
+      </div>
+      <div id="capList"></div>
+      <pre id="capOut" class="mono" style="display:none;max-height:340px;overflow:auto;
+        background:var(--track);padding:10px;border-radius:8px;white-space:pre;
+        font-size:11px;margin-top:8px"></pre>
+      <div class="muted" style="font-size:11.5px;margin-top:8px">Capturing needs
+        admin rights — a password dialog appears, and tcpdump drops back to your
+        user once the socket is open so the file belongs to you. Captures stop at
+        whichever limit comes first and are capped at 20000 packets / 300 s.
+        <b>A capture records whatever crosses the wire</b>, which on unencrypted
+        protocols includes passwords and session tokens — the files are kept in
+        <span class="mono">~/.cache/perch/captures</span> (mode 700) and only the
+        20 most recent are retained.</div></div>
   </section>
 
   <section id="tab-dev">
