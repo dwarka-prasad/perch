@@ -2496,9 +2496,34 @@ def home_layout_save(body):
              if isinstance(w, str) and ident.fullmatch(w)]
     hidden = [w for w in (layout.get("hidden") or [])[:120]
               if isinstance(w, str) and ident.fullmatch(w)]
-    sizes = {k: v for k, v in (layout.get("sizes") or {}).items()
-             if isinstance(k, str) and ident.fullmatch(k)
-             and v in ("s", "m", "l", "full")}
+    def clean_size(v):
+        """{"w": 1-6 or "full", "h": 1-6} from the resize handle; the older
+        s/m/l/full strings are still accepted so saved layouts keep working."""
+        if v in ("s", "m", "l", "full"):
+            return v
+        if not isinstance(v, dict):
+            return None
+        w = v.get("w")
+        if w != "full":
+            try:
+                w = int(w)
+            except (TypeError, ValueError):
+                return None
+            if not 1 <= w <= 6:
+                return None
+        try:
+            h = int(v.get("h", 1))
+        except (TypeError, ValueError):
+            return None
+        return {"w": w, "h": max(1, min(6, h))}
+
+    sizes = {}
+    for k, v in (layout.get("sizes") or {}).items():
+        if not (isinstance(k, str) and ident.fullmatch(k)):
+            continue
+        clean = clean_size(v)
+        if clean is not None:
+            sizes[k] = clean
     clean = {"order": order, "hidden": hidden, "sizes": sizes}
     os.makedirs(CFG_DIR, exist_ok=True)
     atomic_write(HOME_LAYOUT_FILE, json.dumps(clean))

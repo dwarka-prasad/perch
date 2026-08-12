@@ -45,8 +45,8 @@ step, no cloud.
 
 ### Monitor the system
 - **Overview** — a **fully customizable home screen**. Every item on it is a
-  widget you can drag to reorder, resize (small / medium / large / full width)
-  and remove, panels included — and **＋ Add widget** opens a gallery of
+  widget you can drag to reorder, resize by dragging its corner (in grid
+  columns and rows) and remove, panels included — and **＋ Add widget** opens a gallery of
   everything on offer. Out of the box you get live charts for CPU, memory, GPU,
   disk I/O, temperatures and network, a **file search box**, a hardware panel
   (model/BIOS, battery health & cycles, Wi-Fi signal), a critical-log panel and

@@ -180,6 +180,44 @@ try {
     eq((j.layout?.order || []).join(","), "cpu,clock", "server-stored order");
   });
 
+  await check("widgets resize by dragging the corner handle", async () => {
+    const out = await page.eval(`
+      homeWrite({order:["cpu","mem"],hidden:[],sizes:{}});
+      applyHome(); await new Promise(r=>setTimeout(r,900));
+      document.querySelector("#ovCustomize").click();
+      const el=document.querySelector('[data-w="cpu"]');
+      const before={w:el.dataset.cols,h:el.dataset.rows};
+      const handle=el.querySelector(".hwres");
+      const r=handle.getBoundingClientRect();
+      const opts=b=>({bubbles:true,clientX:b.x,clientY:b.y,pointerId:1});
+      // grab the corner and drag right and down by roughly one cell
+      handle.dispatchEvent(new PointerEvent("pointerdown",
+        opts({x:r.left+2,y:r.top+2})));
+      document.dispatchEvent(new PointerEvent("pointermove",
+        opts({x:r.left+2+260,y:r.top+2+150})));
+      document.dispatchEvent(new PointerEvent("pointerup",
+        opts({x:r.left+2+260,y:r.top+2+150})));
+      await new Promise(r2=>setTimeout(r2,900));
+      const after={w:el.dataset.cols,h:el.dataset.rows,
+                   minH:el.style.minHeight,col:el.style.gridColumn};
+      document.querySelector("#ovCustomize").click();
+      return JSON.stringify([before,after]);`);
+    const [before, after] = JSON.parse(out);
+    eq(before.w, "1", "starting width");
+    eq(before.h, "1", "starting height");
+    if (!(after.w === "2" || after.w === "full"))
+      throw new Error(`drag right should widen, got ${after.w}`);
+    atLeast(Number(after.h), 2, "height after dragging down");
+    if (!after.minH) throw new Error("taller widget got no min-height");
+    // and the new size must survive to the server
+    const r = await fetch(`http://127.0.0.1:${port}/api/homelayout`,
+                          { headers: { "X-Token": token } });
+    const saved = (await r.json()).layout?.sizes?.cpu;
+    if (!saved || typeof saved !== "object")
+      throw new Error(`server stored ${JSON.stringify(saved)}`);
+    atLeast(Number(saved.h), 2, "persisted height");
+  });
+
   await check("home file search queries the backend", async () => {
     // A throwaway HOME has no filename index yet (building one walks the whole
     // filesystem), so assert the query round-trips rather than that it matched.

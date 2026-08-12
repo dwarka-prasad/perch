@@ -225,7 +225,7 @@ function saveHome(){
   st.order=shown.concat(st.order.filter(id=>!shown.includes(id)));
   st.hidden=Object.keys(HOME_WIDGETS).filter(id=>!shown.includes(id));
   [...grid.children].forEach(el=>{
-    if(el.dataset.w&&el.dataset.size)st.sizes[el.dataset.w]=el.dataset.size;});
+    if(el.dataset.w&&el.dataset.cols)st.sizes[el.dataset.w]=widgetSize(el);});
   homeWrite(st);
 }
 function homeEl(id){
@@ -247,7 +247,7 @@ function applyHome(){
   const order=st.order.filter(id=>HOME_WIDGETS[id]&&!st.hidden.includes(id));
   order.forEach(id=>{
     const el=homeEl(id);if(!el)return;
-    el.dataset.size=st.sizes[id]||HOME_WIDGETS[id].size||"s";
+    applyWidgetSize(el,sizeOf(id,el));
     el.classList.remove("hw-off");
     grid.appendChild(el);                       // re-append = move into order
   });
@@ -311,28 +311,91 @@ function refreshHome(){
 }
 setInterval(refreshHome,5000);
 
-/* ---- edit mode ---- */
+/* ---- edit mode: drag to move, drag the corner to resize ---- */
 let ovEditing=false,dragEl=null;
+const ROW_UNIT=130;            // px of height one "row" of a widget is worth
+const MAX_SPAN=6;
+
+function gridMetrics(){
+  const g=$("#ovGrid"),cs=getComputedStyle(g);
+  const tracks=cs.gridTemplateColumns.split(" ").filter(Boolean).map(parseFloat)
+    .filter(n=>!isNaN(n));
+  return {cols:Math.max(1,tracks.length),trackW:tracks[0]||220,
+          gap:parseFloat(cs.columnGap)||14};
+}
+/* sizes are stored as {w,h}; the older s/m/l/full strings still load */
+function sizeOf(id,el){
+  const raw=(homeState().sizes||{})[id];
+  if(raw&&typeof raw==="object")
+    return {w:raw.w||1,h:Math.max(1,Math.min(MAX_SPAN,raw.h||1))};
+  const legacy={s:1,m:2,l:3,full:"full"};
+  const def=HOME_WIDGETS[id]&&HOME_WIDGETS[id].size;
+  return {w:legacy[raw||def||"s"]||1,h:1};
+}
+function applyWidgetSize(el,size){
+  el.dataset.cols=size.w;el.dataset.rows=size.h;
+  el.style.gridColumn=size.w==="full"?"1 / -1":`span ${size.w}`;
+  el.style.minHeight=size.h>1
+    ?`${ROW_UNIT*size.h+14*(size.h-1)}px`:"";
+}
+function widgetSize(el){
+  const w=el.dataset.cols==="full"?"full":(+el.dataset.cols||1);
+  return {w,h:+el.dataset.rows||1};
+}
+function startResize(el,ev){
+  ev.preventDefault();ev.stopPropagation();
+  const m=gridMetrics(),start=widgetSize(el);
+  const startW=start.w==="full"?m.cols:start.w;
+  const x0=ev.clientX,y0=ev.clientY;
+  el.classList.add("resizing");el.draggable=false;
+  const move=e=>{
+    const dCols=Math.round((e.clientX-x0)/(m.trackW+m.gap));
+    const dRows=Math.round((e.clientY-y0)/(ROW_UNIT+m.gap));
+    let w=Math.max(1,Math.min(m.cols,startW+dCols));
+    const h=Math.max(1,Math.min(MAX_SPAN,start.h+dRows));
+    applyWidgetSize(el,{w:w>=m.cols?"full":w,h});
+  };
+  const up=()=>{
+    document.removeEventListener("pointermove",move);
+    document.removeEventListener("pointerup",up);
+    el.classList.remove("resizing");el.draggable=ovEditing;
+    saveHome();
+  };
+  document.addEventListener("pointermove",move);
+  document.addEventListener("pointerup",up);
+  el.setPointerCapture&&el.setPointerCapture(ev.pointerId);
+}
 function ovDecorate(){
   $("#ovGrid").querySelectorAll("[data-w]").forEach(el=>{
-    let ctl=el.querySelector(".hwctl");
-    if(!ctl){
-      ctl=document.createElement("div");ctl.className="hwctl";
-      ctl.innerHTML=`<button class="sz" title="resize"></button>
+    const id=el.dataset.w;
+    if(!el.querySelector(".hwctl")){
+      const ctl=document.createElement("div");ctl.className="hwctl";
+      ctl.innerHTML=`<button class="sz" title="cycle width"></button>
         <button class="rm" title="remove from home">✕</button>`;
       ctl.querySelector(".sz").onclick=e=>{e.stopPropagation();
-        const cur=el.dataset.size||"s";
-        el.dataset.size=HOME_SIZES[(HOME_SIZES.indexOf(cur)+1)%HOME_SIZES.length];
+        // the button stays as a quick way to step through the common widths
+        const cur=widgetSize(el),cols=gridMetrics().cols;
+        const steps=[1,2,3,"full"].filter(v=>v==="full"||v<=cols);
+        const i=steps.findIndex(v=>String(v)===String(cur.w));
+        applyWidgetSize(el,{w:steps[(i+1)%steps.length],h:cur.h});
         ovDecorate();saveHome();};
       ctl.querySelector(".rm").onclick=e=>{e.stopPropagation();
         const st=homeState();
-        st.hidden=st.hidden.filter(x=>x!==el.dataset.w).concat(el.dataset.w);
-        st.order=st.order.filter(x=>x!==el.dataset.w);
+        st.hidden=st.hidden.filter(x=>x!==id).concat(id);
+        st.order=st.order.filter(x=>x!==id);
         homeWrite(st);
-        applyHome();toast(`${HOME_WIDGETS[el.dataset.w].title} removed`);};
+        applyHome();toast(`${HOME_WIDGETS[id].title} removed`);};
       el.appendChild(ctl);
     }
-    ctl.querySelector(".sz").textContent=HOME_SIZE_LABEL[el.dataset.size||"s"];
+    if(!el.querySelector(".hwres")){
+      const res=document.createElement("div");res.className="hwres";
+      res.title="drag to resize";
+      res.addEventListener("pointerdown",e=>startResize(el,e));
+      el.appendChild(res);
+    }
+    const cur=widgetSize(el);
+    el.querySelector(".hwctl .sz").textContent=
+      cur.w==="full"?"▭":`${cur.w}×${cur.h}`;
     el.classList.toggle("editing",ovEditing&&!el.classList.contains("hw-off"));
     el.draggable=ovEditing;
   });
@@ -371,15 +434,27 @@ $("#ovGrid")&&$("#ovGrid").addEventListener("dragstart",e=>{
   if(!ovEditing)return;dragEl=e.target.closest("[data-w]");
   if(dragEl)dragEl.classList.add("dragging");});
 $("#ovGrid")&&$("#ovGrid").addEventListener("dragend",()=>{
+  $("#ovGrid").querySelectorAll(".dropbefore,.dropafter").forEach(c=>
+    c.classList.remove("dropbefore","dropafter"));
   if(dragEl){dragEl.classList.remove("dragging");dragEl=null;saveHome();}});
 $("#ovGrid")&&$("#ovGrid").addEventListener("dragover",e=>{
   if(!ovEditing||!dragEl)return;e.preventDefault();
   const grid=$("#ovGrid");
-  const after=[...grid.querySelectorAll("[data-w]:not(.dragging):not(.hw-off)")]
-    .find(c=>{const r=c.getBoundingClientRect();
-      return e.clientY<r.top+r.height/2&&e.clientX<r.right;})||null;
-  if(after)grid.insertBefore(dragEl,after);
-  else grid.appendChild(dragEl);});
+  // a grid wraps, so "the element after the pointer" is whichever widget
+  // centre is nearest — then before or after it depending on which side
+  const els=[...grid.querySelectorAll("[data-w]:not(.dragging):not(.hw-off)")];
+  let best=null,bestD=Infinity,after=false;
+  for(const c of els){
+    const r=c.getBoundingClientRect();
+    const cx=r.left+r.width/2,cy=r.top+r.height/2;
+    const d=(e.clientX-cx)**2+(e.clientY-cy)**2;
+    if(d<bestD){bestD=d;best=c;
+      after=(e.clientY>cy+r.height/4)||(e.clientX>cx);}
+  }
+  els.forEach(c=>c.classList.remove("dropbefore","dropafter"));
+  if(!best){grid.appendChild(dragEl);return;}
+  best.classList.add(after?"dropafter":"dropbefore");
+  if(after)best.after(dragEl);else best.before(dragEl);});
 
 /* ---- widget gallery ---- */
 function galRender(){
