@@ -173,6 +173,9 @@ section{display:none}section.on{display:block;animation:fadein .22s ease}
 #ovGrid>.editing{cursor:grab;outline:2px dashed var(--s1);outline-offset:2px;
   position:relative}
 #ovGrid>.editing.dragging{opacity:.4}
+/* while rearranging, a drag must not turn into a text selection */
+#ovGrid>.editing{user-select:none;-webkit-user-select:none;
+  touch-action:none}
 .hwctl{position:absolute;top:6px;right:8px;display:none;gap:4px;z-index:3}
 #ovGrid>.editing>.hwctl{display:flex}
 .hwctl button{all:unset;cursor:pointer;font-size:10.5px;font-weight:700;

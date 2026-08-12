@@ -344,6 +344,7 @@ function widgetSize(el){
 }
 function startResize(el,ev){
   ev.preventDefault();ev.stopPropagation();
+  if(ev.button)return;
   const m=gridMetrics(),start=widgetSize(el);
   const startW=start.w==="full"?m.cols:start.w;
   const x0=ev.clientX,y0=ev.clientY;
@@ -358,7 +359,7 @@ function startResize(el,ev){
   const up=()=>{
     document.removeEventListener("pointermove",move);
     document.removeEventListener("pointerup",up);
-    el.classList.remove("resizing");el.draggable=ovEditing;
+    el.classList.remove("resizing");
     saveHome();
   };
   document.addEventListener("pointermove",move);
@@ -397,7 +398,11 @@ function ovDecorate(){
     el.querySelector(".hwctl .sz").textContent=
       cur.w==="full"?"▭":`${cur.w}×${cur.h}`;
     el.classList.toggle("editing",ovEditing&&!el.classList.contains("hw-off"));
-    el.draggable=ovEditing;
+    el.draggable=false;              // pointer events drive dragging, not DnD
+    if(!el._dragHooked){
+      el._dragHooked=true;
+      el.addEventListener("pointerdown",e=>startDrag(el,e));
+    }
   });
 }
 $("#ovCustomize")&&($("#ovCustomize").onclick=()=>{
@@ -430,31 +435,58 @@ $("#ovImport")&&($("#ovImport").onclick=()=>{
     homeWrite({order:st.order,hidden:st.hidden||[],sizes:st.sizes||{}});
     applyHome();toast("layout imported");
   }catch(e){toast("import failed: "+e.message,false);}});
-$("#ovGrid")&&$("#ovGrid").addEventListener("dragstart",e=>{
-  if(!ovEditing)return;dragEl=e.target.closest("[data-w]");
-  if(dragEl)dragEl.classList.add("dragging");});
-$("#ovGrid")&&$("#ovGrid").addEventListener("dragend",()=>{
+/* Dragging uses pointer events, not HTML5 drag-and-drop. WebKit (which the
+   desktop window runs on) and Firefox both refuse to begin a native drag
+   unless dragstart calls dataTransfer.setData, so the HTML5 version silently
+   did nothing outside Chrome — and it never worked by touch at all. Pointer
+   events behave the same everywhere and are what the resize handle uses. */
+function clearDropMarks(){
   $("#ovGrid").querySelectorAll(".dropbefore,.dropafter").forEach(c=>
     c.classList.remove("dropbefore","dropafter"));
-  if(dragEl){dragEl.classList.remove("dragging");dragEl=null;saveHome();}});
-$("#ovGrid")&&$("#ovGrid").addEventListener("dragover",e=>{
-  if(!ovEditing||!dragEl)return;e.preventDefault();
+}
+function placeDragged(x,y){
   const grid=$("#ovGrid");
-  // a grid wraps, so "the element after the pointer" is whichever widget
-  // centre is nearest — then before or after it depending on which side
+  // a grid wraps, so "the widget after the pointer" is whichever centre is
+  // nearest — then before or after it depending on which side we are on
   const els=[...grid.querySelectorAll("[data-w]:not(.dragging):not(.hw-off)")];
   let best=null,bestD=Infinity,after=false;
   for(const c of els){
     const r=c.getBoundingClientRect();
     const cx=r.left+r.width/2,cy=r.top+r.height/2;
-    const d=(e.clientX-cx)**2+(e.clientY-cy)**2;
-    if(d<bestD){bestD=d;best=c;
-      after=(e.clientY>cy+r.height/4)||(e.clientX>cx);}
+    const d=(x-cx)**2+(y-cy)**2;
+    if(d<bestD){bestD=d;best=c;after=(y>cy+r.height/4)||(x>cx);}
   }
-  els.forEach(c=>c.classList.remove("dropbefore","dropafter"));
+  clearDropMarks();
   if(!best){grid.appendChild(dragEl);return;}
   best.classList.add(after?"dropafter":"dropbefore");
-  if(after)best.after(dragEl);else best.before(dragEl);});
+  if(after)best.after(dragEl);else best.before(dragEl);
+}
+function startDrag(el,ev){
+  if(!ovEditing||ev.button)return;
+  // never hijack the controls, or anything the widget itself is interactive on
+  if(ev.target.closest(".hwctl,.hwres,button,input,textarea,select,a,label"))return;
+  const x0=ev.clientX,y0=ev.clientY;
+  let started=false;
+  const move=e=>{
+    if(!started){
+      if(Math.abs(e.clientX-x0)+Math.abs(e.clientY-y0)<5)return;  // a click
+      started=true;dragEl=el;el.classList.add("dragging");
+      if(el.setPointerCapture)try{el.setPointerCapture(ev.pointerId);}catch(x){}
+    }
+    e.preventDefault();
+    placeDragged(e.clientX,e.clientY);
+  };
+  const up=()=>{
+    document.removeEventListener("pointermove",move);
+    document.removeEventListener("pointerup",up);
+    document.removeEventListener("pointercancel",up);
+    clearDropMarks();
+    if(started){el.classList.remove("dragging");dragEl=null;saveHome();}
+  };
+  document.addEventListener("pointermove",move);
+  document.addEventListener("pointerup",up);
+  document.addEventListener("pointercancel",up);
+}
 
 /* ---- widget gallery ---- */
 function galRender(){

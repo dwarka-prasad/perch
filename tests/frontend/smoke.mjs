@@ -180,6 +180,71 @@ try {
     eq((j.layout?.order || []).join(","), "cpu,clock", "server-stored order");
   });
 
+  await check("widgets can be dragged into a different position", async () => {
+    // HTML5 drag-and-drop is deliberately not used: WebKit and Firefox refuse
+    // to start one without dataTransfer.setData, so this drives real pointer
+    // events, which is what the app now listens for.
+    const out = await page.eval(`
+      homeWrite({order:["cpu","mem","temp"],hidden:[],sizes:{}});
+      applyHome(); await new Promise(r=>setTimeout(r,900));
+      if(!ovEditing) document.querySelector("#ovCustomize").click();
+      const order=()=>[...document.querySelectorAll(
+        '#ovGrid > [data-w]:not(.hw-off)')].map(e=>e.dataset.w).join(",");
+      const before=order();
+      const first=document.querySelector('[data-w="cpu"]');
+      const third=document.querySelector('[data-w="temp"]');
+      const a=first.getBoundingClientRect(), b=third.getBoundingClientRect();
+      const at=(x,y)=>({bubbles:true,clientX:x,clientY:y,pointerId:7,button:0});
+      first.dispatchEvent(new PointerEvent("pointerdown",
+        at(a.left+40,a.top+30)));
+      // past the movement threshold, then onto the far side of the third tile
+      document.dispatchEvent(new PointerEvent("pointermove",
+        at(a.left+60,a.top+40)));
+      document.dispatchEvent(new PointerEvent("pointermove",
+        at(b.right-10,b.top+b.height/2)));
+      const marked=!!document.querySelector(".dropbefore,.dropafter");
+      document.dispatchEvent(new PointerEvent("pointerup",
+        at(b.right-10,b.top+b.height/2)));
+      await new Promise(r=>setTimeout(r,900));
+      const after=order();
+      document.querySelector("#ovCustomize").click();
+      return JSON.stringify([before,after,marked]);`);
+    const [before, after, marked] = JSON.parse(out);
+    eq(before, "cpu,mem,temp", "starting order");
+    if (after === before)
+      throw new Error("dragging did not move the widget — order unchanged");
+    eq(after, "mem,temp,cpu", "order after dragging the first tile to the end");
+    eq(marked, true, "a drop position should be indicated while dragging");
+    // and the new order must reach the server, not just the DOM
+    const r = await fetch(`http://127.0.0.1:${port}/api/homelayout`,
+                          { headers: { "X-Token": token } });
+    eq(((await r.json()).layout?.order || []).join(","), "mem,temp,cpu",
+       "persisted order");
+  });
+
+  await check("a click inside a widget does not start a drag", async () => {
+    const out = await page.eval(`
+      homeWrite({order:["cpu","mem"],hidden:[],sizes:{}});
+      applyHome(); await new Promise(r=>setTimeout(r,800));
+      if(!ovEditing) document.querySelector("#ovCustomize").click();
+      const el=document.querySelector('[data-w="cpu"]');
+      const r=el.getBoundingClientRect();
+      const at=(x,y)=>({bubbles:true,clientX:x,clientY:y,pointerId:8,button:0});
+      // press and release without moving: must not be treated as a drag
+      el.dispatchEvent(new PointerEvent("pointerdown", at(r.left+30,r.top+30)));
+      document.dispatchEvent(new PointerEvent("pointermove", at(r.left+31,r.top+31)));
+      document.dispatchEvent(new PointerEvent("pointerup", at(r.left+31,r.top+31)));
+      await new Promise(r2=>setTimeout(r2,400));
+      const dragging=!!document.querySelector(".dragging");
+      document.querySelector("#ovCustomize").click();
+      return JSON.stringify([dragging,
+        [...document.querySelectorAll('#ovGrid > [data-w]:not(.hw-off)')]
+          .map(e=>e.dataset.w).join(",")]);`);
+    const [dragging, order] = JSON.parse(out);
+    eq(dragging, false, "a 1px twitch must not begin a drag");
+    eq(order, "cpu,mem", "order unchanged by a click");
+  });
+
   await check("widgets resize by dragging the corner handle", async () => {
     const out = await page.eval(`
       homeWrite({order:["cpu","mem"],hidden:[],sizes:{}});
