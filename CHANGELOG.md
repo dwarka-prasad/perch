@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.5.0
+
+- **History that outlives the samples.** Monitor kept 24 hours of 1-minute
+  samples, which could tell you memory was at 92% but not whether that was
+  normal for a Tuesday. Each finished hour is now rolled into one row (average
+  and peak per metric) and kept for ~120 days, so the chart offers **24 hours /
+  7 days / 30 days / 90 days** — minute resolution for a day, hourly beyond it.
+  The rollup backfills from the samples you already have, so long ranges work
+  the moment you upgrade, and catches up after the machine has been off.
+  **Export CSV** gets the data out for a spreadsheet or a bug report.
+- **Security overview** — a tab that assembles what Perch already knew but had
+  scattered: which ports are reachable from the network, whether the firewall
+  is actually on, pending security updates, failed SSH and sudo attempts from
+  the journal grouped by source, `sshd_config` red flags (root login, password
+  auth, empty passwords), who is in the admin groups, and whether automatic
+  security updates are enabled. Scored, sorted worst-first, and each finding
+  links to the tab that can fix it. It only reads.
+- **Periodic digest.** The notification channels only ever spoke when something
+  was wrong, which makes a healthy machine indistinguishable from a broken
+  notifier. Perch can now send a summary on a schedule through the same
+  channels — CPU and memory averages, which way disk is trending, what fired,
+  what's pending, how old the backup is — with a preview and a *send one now*
+  button.
+- **Fleet view.** Perch already exposes a token-authenticated read API, so a
+  second Perch is all the agent a fleet needs — no daemon, no new protocol.
+  Add other machines and see CPU, memory, temperature and uptime for each in
+  one grid. Strictly read-only: it polls them, it never asks them to do
+  anything. Their tokens live in `~/.config/perch/fleet.json` (chmod 600) and
+  are never sent back to the browser.
+- **Test a custom rule before saving it**, instead of saving and waiting out
+  the once-a-minute cycle to find out whether it was right.
+- **A backup-staleness rule kind** — backup state was recorded but nothing
+  watched it, so a backup that quietly stopped working stayed quiet.
+- **`?` opens a keyboard shortcut sheet**, for the shortcuts the app had
+  quietly accumulated (Ctrl+K, Ctrl+I, the terminal's Ctrl+Shift+ family).
+- The frontend is now five ordered scripts instead of one 3900-line file, with
+  no build step: they concatenate byte-for-byte back to the original and share
+  one global scope, so execution is identical rather than merely equivalent.
+- Frontend smoke tests grew from 15 to **25 checks**, now covering the file
+  browser, terminal, API client and database browser — the riskiest surfaces
+  that had no coverage at all.
+
 ## 1.4.0
 
 - **Everything you have installed, in one list.** The Packages tab now shows

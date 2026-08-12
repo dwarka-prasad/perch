@@ -62,7 +62,10 @@ step, no cloud.
 
 - **Monitor** — threshold alerts (CPU/mem/disk/temp…) with desktop
   notifications and outbound channels (ntfy, Slack, Discord, generic
-  webhook), log-pattern watchers, and 24 h of one-minute history.
+  webhook), log-pattern watchers, and history that outlives the samples —
+  1-minute detail for a day, hourly averages for **90 days**, with CSV export.
+  A **periodic digest** can send a summary on a schedule through the same
+  channels, so a healthy machine still says something.
   **Alerting has a master switch**: stop alerts entirely, snooze them for
   15 min / 1 h / 4 h / 24 h (it resumes on its own), enable or disable every
   rule at once, and clear the alert history. While alerting is off the
@@ -74,6 +77,14 @@ step, no cloud.
 
   ![Monitor — the alerting master switch with snooze buttons, the threshold rules, and custom rules watching a specific unit, port, process or folder](docs/monitor-alerts.png)
 
+- **Security** — one page for "is this machine exposed?": ports reachable from
+  the network, whether the firewall is really on, pending security updates,
+  failed logins from the journal grouped by source, `sshd_config` red flags,
+  admin-group membership and automatic-update status. Scored, worst first,
+  read-only.
+- **Fleet** — other machines running Perch, in one grid. Each is polled over
+  its own read-only API, so there is no agent to install; their tokens are
+  stored chmod 600 and never sent to the browser.
 - **Processes / Users / Logs / Kernel / Updates** — kill processes, inspect
   any process in a detail modal, browse the journal live, read kernel
   tunables, and see pending APT updates with a sidebar badge.
@@ -177,7 +188,8 @@ step, no cloud.
   checkout or installs the release `.deb`, depending on how you installed it,
   and refuses rather than risk a checkout with uncommitted work.
 
-Everything is reachable through a **Ctrl+K command palette**, the assistant is
+Everything is reachable through a **Ctrl+K command palette** (and **?** lists
+every keyboard shortcut), the assistant is
 one click away in the bottom-right corner from any tab, and the grouped
 sidebar scrolls on its own (independently of the page) with live CPU/MEM/DISK
 mini-bars pinned at the bottom. Integrations that aren't installed
@@ -263,7 +275,8 @@ needs that token — bookmark the URL.
 State (search index, alert history, screenshots) lives under
 `~/.cache/perch`; alert and app config under `~/.config/perch` — including
 `alertctl.json` (alerting on/off/snooze), `customrules.json` (your own alert
-rules) and `home.json` (the home-screen layout). Because the layout lives on
+rules), `fleet.json` (other machines, chmod 600) and `home.json` (the
+home-screen layout). Because the layout lives on
 the server, it follows you to a different browser or machine; the browser keeps
 a copy as an offline cache, and *reset layout* on the Overview tab clears both.
 
