@@ -6,6 +6,8 @@
 
 [![CI](https://github.com/dwarka-prasad/perch/actions/workflows/ci.yml/badge.svg)](https://github.com/dwarka-prasad/perch/actions/workflows/ci.yml)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
+[![Site](https://img.shields.io/badge/site-dwarka--prasad.github.io%2Fperch-0d9668)](https://dwarka-prasad.github.io/perch/)
+[![Roadmap](https://img.shields.io/badge/roadmap-help_wanted-7057ff)](ROADMAP.md)
 
 A local system + developer dashboard for Linux — monitoring, ops, a full
 developer toolbox, and an AI assistant, in one token-protected web app that
@@ -304,6 +306,10 @@ locked out. Privileged actions (package install, upgrades) go through
 or handled by Perch. The web terminal and database browser run as your user;
 writes from the file editor/sketch are restricted to your home directory.
 Review the code before exposing it beyond localhost.
+
+## Roadmap and contributing
+
+What comes next is in [ROADMAP.md](ROADMAP.md); issues tagged `help wanted` and `good first issue` are open to anyone.
 
 ## Development
 

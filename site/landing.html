@@ -1,0 +1,67 @@
+<section class="hero">
+  <span class="pill" data-reveal><i data-lucide="bird" width="14"></i> v{{VERSION}} · MIT · Linux · <span id="stars">–</span> stars</span>
+  <h1 data-reveal>Your machine, <span class="g">at a glance.</span></h1>
+  <p class="lead" data-reveal>A self-hosted system and developer dashboard for Linux. Live monitoring and alerts, a security overview, storage and file tools, Docker, systemd, git, an API client, a real terminal, package management, GNOME settings and an AI assistant, in one token-protected web app on 127.0.0.1.</p>
+  <p data-reveal><a class="btn primary" href="/perch/docs/readme.html#installation">Install <i data-lucide="arrow-right" width="16"></i></a> <a class="btn" href="https://github.com/dwarka-prasad/perch/releases/latest"><i data-lucide="package" width="16"></i> Download .deb</a> <a class="btn" href="https://github.com/dwarka-prasad/perch"><i data-lucide="github" width="16"></i> GitHub</a></p>
+</section>
+<div class="shot" data-reveal><img src="/perch/img/overview.png" alt="Perch overview: live CPU, memory, network and GPU charts, file search and the health scorecard"></div>
+
+<section class="grid">
+  <div class="card" data-reveal><div class="ic"><i data-lucide="activity" width="18"></i></div><h3>Monitor and alert</h3><p>Live CPU, memory, GPU, disk, temperature and network. Threshold and custom rules, snooze, 90 days of history, digests to ntfy, Slack, Discord or webhooks.</p></div>
+  <div class="card" data-reveal><div class="ic"><i data-lucide="shield-check" width="18"></i></div><h3>Security overview</h3><p>Ports reachable from the network, firewall state, pending security updates, failed logins, sshd red flags and admin accounts. Scored, worst first, read-only.</p></div>
+  <div class="card" data-reveal><div class="ic"><i data-lucide="hard-drive" width="18"></i></div><h3>Storage and files</h3><p>Folder-size analyzer, SMART drive health, rsync backups, duplicate and stale-file finders, a file browser with previews, and whole-system search.</p></div>
+  <div class="card" data-reveal><div class="ic"><i data-lucide="terminal" width="18"></i></div><h3>Developer toolbox</h3><p>A real terminal multiplexer, Docker and Kubernetes, systemd, git dashboard, database browser, a mini-Postman with flows, and twenty everyday converters.</p></div>
+  <div class="card" data-reveal><div class="ic"><i data-lucide="settings-2" width="18"></i></div><h3>Desktop and packages</h3><p>Brightness, power, night light, themes and tweaks for GNOME. Search, install and update across apt, dnf, pacman, zypper, snap and flatpak through pkexec.</p></div>
+  <div class="card" data-reveal><div class="ic"><i data-lucide="sparkles" width="18"></i></div><h3>AI assistant</h3><p>Ask about the tab you are on with a live system snapshot. Local Claude CLI by default, or Anthropic, OpenAI-compatible and Ollama providers. One-click health report.</p></div>
+</section>
+
+<section class="nums">
+  <div data-reveal><b>1</b><span>Python service, stdlib + psutil</span></div>
+  <div data-reveal><b>0</b><span>build steps, databases, clouds</span></div>
+  <div data-reveal><b>127.0.0.1</b><span>where it listens, with a token</span></div>
+  <div data-reveal><b>20+</b><span>tabs, all hidden when not applicable</span></div>
+</section>
+
+<section class="section">
+  <h2 data-reveal>Install in a minute</h2>
+  <p class="sub" data-reveal>Debian package, per-user from source, or Docker for headless hosts.</p>
+  <div data-reveal>
+    <div class="tabs"><button class="on" data-tab="deb">Debian / Ubuntu</button><button data-tab="user">From source (no root)</button><button data-tab="docker">Docker</button><button data-tab="run">Just run it</button></div>
+    <div class="tabpanes">
+<pre class="on" data-pane="deb"><code>git clone https://github.com/dwarka-prasad/perch && cd perch
+make deb
+sudo apt install ./dist/perch_{{VERSION}}_all.deb
+perch-desktop        # native window, or `perch` for the browser URL</code></pre>
+<pre data-pane="user"><code>git clone https://github.com/dwarka-prasad/perch && cd perch
+make install-user    # systemd user service + app-menu launcher
+systemctl --user status perch</code></pre>
+<pre data-pane="docker"><code>git clone https://github.com/dwarka-prasad/perch && cd perch
+docker compose -f docker/compose.yaml up -d --build
+docker compose -f docker/compose.yaml logs   # copy the token URL</code></pre>
+<pre data-pane="run"><code>git clone https://github.com/dwarka-prasad/perch && cd perch
+make run             # http://127.0.0.1:9080 with the token printed</code></pre>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <h2 data-reveal>A look around</h2>
+  <p class="sub" data-reveal>Click any screenshot to enlarge.</p>
+  <div class="gallery">
+    <figure data-reveal><img src="/perch/img/home-customize.png" alt="Customizable home screen: drag, resize and remove widgets, add from a gallery"><figcaption>Customizable home screen</figcaption></figure>
+    <figure data-reveal><img src="/perch/img/monitor-alerts.png" alt="Monitor: alerting master switch, thresholds and custom rules"><figcaption>Alerts, snooze and custom rules</figcaption></figure>
+    <figure data-reveal><img src="/perch/img/security.png" alt="Security overview with scored findings"><figcaption>Security overview</figcaption></figure>
+    <figure data-reveal><img src="/perch/img/traffic.png" alt="Traffic: per-interface rates and live connections with owning process"><figcaption>Traffic and packet capture</figcaption></figure>
+    <figure data-reveal><img src="/perch/img/terminal.png" alt="Terminal with split panes and tabs"><figcaption>Terminal multiplexer</figcaption></figure>
+    <figure data-reveal><img src="/perch/img/network-ports.png" alt="Listening ports with stop and force buttons"><figcaption>Ports and firewall</figcaption></figure>
+    <figure data-reveal><img src="/perch/img/packages.png" alt="Installed packages with update and remove"><figcaption>Packages across managers</figcaption></figure>
+    <figure data-reveal><img src="/perch/img/assistant.png" alt="AI assistant docked over the current page"><figcaption>AI assistant</figcaption></figure>
+    <figure data-reveal><img src="/perch/img/tour.gif" alt="Animated tour of the tabs"><figcaption>Tab tour</figcaption></figure>
+  </div>
+  <div id="lb" role="dialog" aria-label="Screenshot"><div><img src="" alt=""><p></p></div></div>
+</section>
+
+<section class="cta" data-reveal>
+  <div><h2>Built for your own machines.</h2><p>Runs as you, never phones home. Help shape what comes next.</p></div>
+  <a class="btn" href="/perch/docs/roadmap.html">See the roadmap <i data-lucide="arrow-right" width="16"></i></a>
+</section>
