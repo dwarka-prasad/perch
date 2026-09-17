@@ -2241,7 +2241,7 @@ def notify(title, msg, critical=True):
         pass
 
 
-# ---- outbound notification channels (ntfy / Slack / Discord / webhook) ----
+# ---- outbound notification channels (ntfy / Slack / Discord / Gotify / webhook) ----
 
 def _notify_file():
     return os.path.join(CFG_DIR, "notify.json")
@@ -2291,6 +2291,11 @@ def _post_channel(ch, title, msg):
             req = ur.Request(url, method="POST",
                              headers={"Content-Type": "application/json"},
                              data=json.dumps({"content": f"**{title}**\n{msg}"}).encode())
+        elif t == "gotify":
+            req = ur.Request(url, method="POST",
+                             headers={"Content-Type": "application/json"},
+                             data=json.dumps({"title": title, "message": msg,
+                                              "priority": 8}).encode())
         else:  # generic webhook
             req = ur.Request(url, method="POST",
                              headers={"Content-Type": "application/json"},
