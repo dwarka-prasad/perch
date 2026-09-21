@@ -288,7 +288,7 @@ function renderChannels(){
   $("#ntChannels").innerHTML=(ntCfg.channels||[]).map((c,i)=>`
     <div class="row" style="margin-bottom:6px">
       <select class="btn ntType" data-i="${i}">
-        ${["ntfy","slack","discord","webhook"].map(t=>`<option value="${t}" ${t===c.type?"selected":""}>${t}</option>`).join("")}</select>
+        ${["ntfy","slack","discord","gotify","webhook"].map(t=>`<option value="${t}" ${t===c.type?"selected":""}>${t}</option>`).join("")}</select>
       <input type="text" class="ntUrl" data-i="${i}" value="${esc(c.url||"")}" placeholder="URL" style="flex:1;min-width:220px" class="mono">
       <label class="pill"><input type="checkbox" class="ntEn" data-i="${i}" ${c.enabled!==false?"checked":""}> on</label>
       <span class="hint" data-ntdel="${i}" style="color:var(--crit);cursor:pointer">✕</span></div>`).join("")
